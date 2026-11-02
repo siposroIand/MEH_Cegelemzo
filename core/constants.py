@@ -1,15 +1,16 @@
 from pathlib import Path
+import os
+import sys
 
-APP_DIR = Path.cwd()
+APP_DIR = Path(os.environ.get("MEH_DATA_HOME", Path.cwd())).resolve()
 OUTPUT_DIR = APP_DIR / "output"
 LOG_DIR = APP_DIR / "logs"
 DATA_DIR = APP_DIR / "data"
-CONFIG_DIR = APP_DIR / "config"
+CONFIG_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1])) / "config"
 
-OUTPUT_DIR.mkdir(exist_ok=True)
-LOG_DIR.mkdir(exist_ok=True)
-DATA_DIR.mkdir(exist_ok=True)
-CONFIG_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 CACHE_DB = DATA_DIR / "okir_cache.db"
 PRODUCT_GROUPS_JSON = CONFIG_DIR / "product_groups.json"

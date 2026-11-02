@@ -1,5 +1,11 @@
 cc/
 ├─ app.py
+├─ web_app.py
+├─ web/
+│  ├─ app.py
+│  ├─ workspace.py
+│  ├─ templates/
+│  └─ static/
 ├─ core/
 │  ├─ constants.py
 │  ├─ logger.py
@@ -11,16 +17,28 @@ cc/
 │  ├─ cache_db.py
 │  ├─ category_service.py
 │  ├─ export_service.py
+│  ├─ report_service.py
+│  ├─ filter_service.py
+│  ├─ fetch_service.py
 │  ├─ import_service.py
 │  ├─ okir_client.py
+│  ├─ ktj_service.py
 │  └─ persistence_service.py
 ├─ ui/
 │  ├─ main_window.py
+│  ├─ table_model.py
 │  └─ widgets.py
 ├─ workers/
 │  └─ fetch_worker.py
 ├─ config/
 │  └─ product_groups.json
+├─ tests/
+├─ tools/
+├─ requirements-core.txt
+├─ requirements-web.txt
+├─ requirements-test.txt
+├─ requirements.txt
+├─ README.md
 ├─ data/
 ├─ logs/
 └─ output/

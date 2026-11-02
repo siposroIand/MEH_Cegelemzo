@@ -1,4 +1,4 @@
-import re
+from pathlib import Path
 
 import pandas as pd
 from PySide6.QtCore import Qt, QTimer
@@ -19,8 +19,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -59,9 +58,9 @@ from services.export_service import (
     write_ktj_excel,
     write_summary_excel,
 )
-from services.import_service import build_source_from_excel_by_adoszam
+from services.filter_service import Filters, filter_frame, unique_quantities
+from services.report_service import csv_bytes, dataset_bytes, read_dataset, report_html
 from services.ktj_service import KtjService
-from services.okir_client import OkirClient
 from services.persistence_service import PersistenceService
 from ui.widgets import (
     ChartPanel,
@@ -72,6 +71,7 @@ from ui.widgets import (
     MultiSelectComboBox,
 )
 from workers.fetch_worker import FetchWorker
+from ui.table_model import DataFrameModel
 
 
 class MainWindow(QMainWindow):
@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self._filtered_cache = {}
         self._drill_category = None
         self._ktj_confirmed = False
+        self._dirty_views = set()
 
         self.category_colors = {
             "Vas": "#64748b",
@@ -161,7 +162,7 @@ class MainWindow(QMainWindow):
             return self._filtered_cache
 
         master = self.get_filtered_master()
-        base = self.get_filtered_base_unique()
+        base = unique_quantities(master)
 
         yearly = pd.DataFrame()
         if base is not None and not base.empty and "EV" in base.columns and "OSSZES_MENNYISEG" in base.columns:
@@ -260,6 +261,9 @@ class MainWindow(QMainWindow):
         import_package_action = QAction("Megosztott csomag betöltése", self)
         import_package_action.triggered.connect(self.import_shared_package)
         import_menu.addAction(import_package_action)
+        import_json_action = QAction("MÉH JSON betöltése (web / asztali)", self)
+        import_json_action.triggered.connect(self.import_json)
+        import_menu.addAction(import_json_action)
 
         export_menu = menubar.addMenu("Exportálás")
         save_snapshot_action = QAction("Helyi mentés készítése", self)
@@ -281,6 +285,16 @@ class MainWindow(QMainWindow):
         export_ktj_action = QAction("Excel export (KTJ szerint)", self)
         export_ktj_action.triggered.connect(self.export_ktj_excel)
         export_menu.addAction(export_ktj_action)
+        for title, kind in (
+            ("CSV részletes (aktuális szűrés)", "csv"),
+            ("JSON adatcsere (aktuális szűrés)", "json"),
+            ("JSON teljes biztonsági másolat", "backup"),
+            ("Kimaradt / hibás lekérések (CSV)", "missing"),
+            ("Vezetői riport (HTML / nyomtatás PDF-be)", "report"),
+        ):
+            action = QAction(title, self)
+            action.triggered.connect(lambda checked=False, value=kind: self.export_portable(value))
+            export_menu.addAction(action)
 
 
         program_menu = menubar.addMenu("Program")
@@ -443,7 +457,7 @@ class MainWindow(QMainWindow):
                 padding: 6px 10px;
             }
             QPushButton:hover { background: #f1f5f9; }
-            QLineEdit, QComboBox, QTextEdit, QTableWidget {
+            QLineEdit, QComboBox, QTextEdit, QTableView {
                 background: white;
                 border: 1px solid #cbd5e1;
                 border-radius: 8px;
@@ -554,22 +568,23 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.tab_ktj)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.ktj_table = QTableWidget()
+        self.ktj_table = QTableView()
         self.configure_table(self.ktj_table)
         layout.addWidget(self.ktj_table)
 
     def _build_missing_tab(self):
         layout = QVBoxLayout(self.tab_missing)
-        self.missing_table = QTableWidget()
+        self.missing_table = QTableView()
         self.configure_table(self.missing_table)
         layout.addWidget(self.missing_table)
 
-    def configure_table(self, table: QTableWidget):
+    def configure_table(self, table: QTableView):
         table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(QTableWidget.SelectRows)
-        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableView.SelectRows)
+        table.setEditTriggers(QTableView.NoEditTriggers)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        table.horizontalHeader().setResizeContentsPrecision(100)
         table.horizontalHeader().setStretchLastSection(True)
 
     # -------------------------------------------------------------------------
@@ -621,6 +636,9 @@ class MainWindow(QMainWindow):
     # Import / Fetch
     # -------------------------------------------------------------------------
     def open_import_dialog(self):
+        if getattr(self, "worker", None) is not None and self.worker.isRunning():
+            QMessageBox.warning(self, "Folyamatban", "Várd meg a folyamatban lévő lekérést.")
+            return
         dlg = ImportDatabaseDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -642,41 +660,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Hiányzó fájl", "Előbb válassz ki egy Excel fájlt.")
             return
 
-        try:
-            self.set_status("Forrásfájl beolvasása...")
-            self.progress.setRange(0, 0)
-            self.repaint()
-
-            self.source_df = build_source_from_excel_by_adoszam(
-                file_path,
-                OkirClient(),
-                log_fn=logger.write,
-                progress_fn=self.on_source_progress,
-            )
-
-            if self.source_df.empty:
-                self.progress.setRange(0, 100)
-                self.progress.setValue(0)
-                QMessageBox.warning(self, "Nincs adat", "Nem sikerült forrásadatot előállítani.")
-                self.set_status("A forrásfájl feldolgozása nem adott eredményt.")
-                return
-        except Exception as e:
-            self.progress.setRange(0, 100)
-            self.progress.setValue(0)
-            self.set_status(f"Hiba történt: {e}")
-            QMessageBox.critical(self, "Hiba", str(e))
-            return
-
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.set_status("Hulladék adatok lekérése indul...")
-
+        self.progress.setRange(0, 0)
+        self.set_status("Forrásimport és hulladékadatok lekérése a háttérben...")
         self.worker = FetchWorker(
             self.source_df.copy(),
             self.current_use_cache,
             False,
             self.selected_types_from_label(self.current_query_label),
             max_workers=4,
+            file_path=file_path,
         )
         self.worker.progress_signal.connect(self.on_progress)
         self.worker.finished_signal.connect(self.on_fetch_finished)
@@ -779,95 +771,44 @@ class MainWindow(QMainWindow):
         self._invalidate_filtered_cache()
         self.refresh_all_views()
 
-    def _apply_hak_filter(self, df: pd.DataFrame, code_text: str) -> pd.DataFrame:
-        if df is None or df.empty or not code_text or "HULLADEKKOD" not in df.columns:
-            return df
-        codes = [c.strip() for c in str(code_text).split(";") if c.strip()]
-        if not codes:
-            return df
-        pattern = "|".join(re.escape(c) for c in codes)
-        return df[df["HULLADEKKOD"].astype(str).str.contains(pattern, case=False, na=False, regex=True)]
+    def current_filters(self):
+        return Filters(
+            companies=tuple(self.filter_company.checked_values()),
+            years=tuple(self.filter_year.checked_values()),
+            categories=tuple(self.filter_category.checked_values()),
+            code=self.filter_code.text().strip(),
+        )
 
     def get_filtered_master(self):
-        master = self.agg.master
-        if master is None or master.empty:
-            return master
-
-        df = master
-        selected_companies = self.filter_company.checked_values()
-        selected_years = self.filter_year.checked_values()
-        selected_categories = self.filter_category.checked_values()
-        code_text = self.filter_code.text().strip()
-
-        if selected_companies and "CEGNEV" in df.columns:
-            df = df[df["CEGNEV"].astype(str).isin([str(x) for x in selected_companies])]
-
-        if selected_years and "EV" in df.columns:
-            df = df[df["EV"].astype("Int64").isin([int(x) for x in selected_years])]
-
-        if selected_categories and "PRODUCT_GROUP" in df.columns:
-            df = df[df["PRODUCT_GROUP"].astype(str).isin([str(x) for x in selected_categories])]
-
-        df = self._apply_hak_filter(df, code_text)
-        return df
+        return filter_frame(self.agg.master, self.current_filters())
 
     def get_filtered_raw(self):
-        if self.raw_df is None or self.raw_df.empty:
-            return pd.DataFrame()
-
-        df = self.raw_df.copy()
-        selected_companies = self.filter_company.checked_values()
-        selected_years = self.filter_year.checked_values()
-        selected_categories = self.filter_category.checked_values()
-        code_text = self.filter_code.text().strip()
-
-        if selected_companies and "CEGNEV" in df.columns:
-            df = df[df["CEGNEV"].astype(str).isin([str(x) for x in selected_companies])]
-
-        if selected_years and "EV" in df.columns:
-            df = df[df["EV"].astype("Int64").isin([int(x) for x in selected_years])]
-
-        df = self._apply_hak_filter(df, code_text)
-
-        if selected_categories and "HULLADEKKOD" in df.columns:
-            df = df.copy()
-            df["PRODUCT_GROUP_TMP"] = df["HULLADEKKOD"].astype(str).apply(self.category_service.resolve_group)
-            df = df[df["PRODUCT_GROUP_TMP"].isin([str(x) for x in selected_categories])]
-            df.drop(columns=["PRODUCT_GROUP_TMP"], inplace=True, errors="ignore")
-
-        return df
+        return filter_frame(self.raw_df, self.current_filters(), self.category_service)
 
     def get_filtered_base_unique(self):
-        master = self.get_filtered_master()
-        if master is None or master.empty:
-            return pd.DataFrame()
-
-        cols = [
-            "CEGNEV", "SOURCE_KUJ", "EV", "HULLADEKKOD",
-            "ADATTIPUS", "ADATTIPUS_LABEL", "OSSZES_MENNYISEG", "HULLADEK_VESZELYES_10",
-        ]
-        existing_cols = [c for c in cols if c in master.columns]
-        if not existing_cols:
-            return pd.DataFrame()
-
-        return master[existing_cols].drop_duplicates().copy()
+        return unique_quantities(self.get_filtered_master())
 
     # -------------------------------------------------------------------------
     # Refresh
     # -------------------------------------------------------------------------
     def refresh_all_views(self):
         self._invalidate_filtered_cache()
-        self.refresh_dashboard()
-        self.refresh_data_year_tabs()
-        self.refresh_missing_table()
+        self._dirty_views = {0, 1, 2, 3}
         self.refresh_exec_summary()
         self.refresh_company_info()
+        self.on_tab_changed(self.tabs.currentIndex())
 
     def on_tab_changed(self, idx):
-        if idx == 0:
-            self.refresh_dashboard()
-        elif idx == 2:
-            self._maybe_load_ktj()
+        if idx not in self._dirty_views:
+            return
+        if idx == 2:
+            if not self.raw_df.empty:
+                self._maybe_load_ktj()
+                if not self._ktj_confirmed:
+                    return
+        else:
+            {0: self.refresh_dashboard, 1: self.refresh_data_year_tabs, 3: self.refresh_missing_table}[idx]()
+        self._dirty_views.discard(idx)
 
     def _maybe_load_ktj(self):
         if self._ktj_confirmed:
@@ -1315,7 +1256,9 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------------
     def refresh_data_year_tabs(self):
         while self.data_year_tabs.count():
+            page = self.data_year_tabs.widget(0)
             self.data_year_tabs.removeTab(0)
+            page.deleteLater()
 
         master = self.get_filtered_master()
         if master is None or master.empty:
@@ -1367,7 +1310,7 @@ class MainWindow(QMainWindow):
 
             page = QWidget()
             page_l = QVBoxLayout(page)
-            table = QTableWidget()
+            table = QTableView()
             self.configure_table(table)
             self._set_table_df(table, out)
             page_l.addWidget(table)
@@ -1380,9 +1323,14 @@ class MainWindow(QMainWindow):
             return
 
         self.set_status("KTJ metaadatok betöltése...")
-        out = self._prepare_ktj_view(df)
-        self._set_table_df(self.ktj_table, out)
-        self.set_status("KTJ nézet frissítve.")
+        try:
+            out = self._prepare_ktj_view(df)
+            self._set_table_df(self.ktj_table, out)
+            self.set_status("KTJ nézet frissítve.")
+        except Exception as exc:
+            self._ktj_confirmed = False
+            self.set_status(f"KTJ hiba: {exc}")
+            QMessageBox.critical(self, "KTJ lekérési hiba", str(exc))
 
     def _prepare_ktj_view(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
@@ -1437,27 +1385,12 @@ class MainWindow(QMainWindow):
     def refresh_missing_table(self):
         self._set_table_df(self.missing_table, self.missing_df)
 
-    def _set_table_df(self, table: QTableWidget, df: pd.DataFrame):
+    def _set_table_df(self, table: QTableView, df: pd.DataFrame):
         table.setSortingEnabled(False)
-        table.clear()
-
-        if df is None or df.empty:
-            table.setRowCount(0)
-            table.setColumnCount(0)
-            table.setSortingEnabled(True)
-            return
-
-        display_df = df.fillna("")
-        table.setColumnCount(len(display_df.columns))
-        table.setRowCount(len(display_df))
-        table.setHorizontalHeaderLabels([str(c) for c in display_df.columns])
-
-        for i in range(len(display_df)):
-            for j, col in enumerate(display_df.columns):
-                value = display_df.iloc[i, j]
-                text = "" if (isinstance(value, float) and pd.isna(value)) else str(value)
-                table.setItem(i, j, QTableWidgetItem(text))
-
+        previous = table.model()
+        table.setModel(DataFrameModel(df if df is not None else pd.DataFrame(), table))
+        if previous is not None:
+            previous.deleteLater()
         table.resizeColumnsToContents()
         table.setSortingEnabled(True)
 
@@ -1782,3 +1715,57 @@ class MainWindow(QMainWindow):
             self.cache.clear_all()
             self.set_status("A gyorsítótár törölve lett.")
             QMessageBox.information(self, "Kész", "A gyorsítótár törölve lett.")
+
+    def import_json(self):
+        if getattr(self, "worker", None) is not None and self.worker.isRunning():
+            QMessageBox.warning(self, "Folyamatban", "Várd meg a folyamatban lévő lekérést.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "MÉH JSON betöltése", "", "MÉH JSON (*.json)")
+        if not path:
+            return
+        try:
+            source, raw, missing = read_dataset(Path(path).read_bytes())
+            self.current_file_path = path
+            self.current_file_label.setText(path)
+            years = raw["EV"].dropna() if not raw.empty else pd.Series(dtype=float)
+            self.on_fetch_finished(source, raw, missing, int(years.max()) if not years.empty else None)
+        except Exception as exc:
+            QMessageBox.critical(self, "JSON import hiba", str(exc))
+
+    def export_portable(self, kind):
+        extension = {"csv": "csv", "missing": "csv", "json": "json", "backup": "json", "report": "html"}[kind]
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export mentése", str(OUTPUT_DIR / f"meh-{kind}.{extension}"),
+            f"{extension.upper()} (*.{extension})",
+        )
+        if not path:
+            return
+        try:
+            from services.export_service import build_detail_export
+            master = self.get_filtered_master()
+            if kind == "report":
+                description = f"Cégek: {self.filter_company.checked_texts()}; Évek: {self.filter_year.checked_values()}; " \
+                              f"Csoportok: {self.filter_category.checked_values()}; HAK: {self.filter_code.text()}"
+                Path(path).write_text(report_html(master, self.missing_df, description), encoding="utf-8")
+            elif kind in {"csv", "missing"}:
+                frame = self.missing_df if kind == "missing" else build_detail_export(master, self.source_df)
+                Path(path).write_bytes(csv_bytes(frame))
+            else:
+                raw = self.raw_df if kind == "backup" else self.get_filtered_raw()
+                source = self.source_df
+                if kind != "backup" and not source.empty:
+                    keys = set(zip(raw.get("CEGNEV", []), raw.get("SOURCE_KUJ", [])))
+                    source = source.loc[[key in keys for key in zip(source["CEGNEV"], source["KUJ"])]]
+                Path(path).write_bytes(dataset_bytes(source, raw, self.missing_df))
+            self.set_status(f"Export elkészült: {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export hiba", str(exc))
+
+    def closeEvent(self, event):
+        if getattr(self, "worker", None) is not None and self.worker.isRunning():
+            QMessageBox.warning(self, "Folyamatban", "Bezárás előtt várd meg a lekérés befejezését.")
+            event.ignore()
+            return
+        self.persistence.close()
+        self.cache.close()
+        super().closeEvent(event)

@@ -1,6 +1,7 @@
 from typing import List
 
 import pandas as pd
+from services.filter_service import unique_quantities
 
 from core.utils import (
     clean_int_like,
@@ -12,6 +13,8 @@ from core.utils import (
 
 
 def build_detail_export(master: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
+    if master.empty:
+        return pd.DataFrame()
     src_cols = [
         "CEGNEV", "KUJ", "SZEKHELY", "ADOSZAM",
         "SRC_EMAIL", "SRC_TELEFON", "SRC_WEB",
@@ -22,13 +25,11 @@ def build_detail_export(master: pd.DataFrame, source_df: pd.DataFrame) -> pd.Dat
             src[c] = ""
     src = src[src_cols].drop_duplicates(subset=["CEGNEV", "KUJ"])
 
-    out = master.merge(
+    out = unique_quantities(master).merge(
         src, how="left",
         left_on=["CEGNEV", "SOURCE_KUJ"],
         right_on=["CEGNEV", "KUJ"],
     )
-
-    out = out.drop_duplicates(subset=["CEGNEV", "SOURCE_KUJ", "EV", "HULLADEKKOD"])
 
     parts = out["SZEKHELY"].apply(split_address_parts).apply(pd.Series)
 
@@ -44,7 +45,7 @@ def build_detail_export(master: pd.DataFrame, source_df: pd.DataFrame) -> pd.Dat
     out = out[[
         "CEGNEV", "Megye", "IRSZ", "Település", "Cím",
         "SRC_EMAIL", "SRC_TELEFON", "ADOSZAM", "SOURCE_KUJ",
-        "EV", "HULLADEKKOD", "HULLADEK_MEGNEVEZES",
+        "EV", "ADATTIPUS_LABEL", "HULLADEKKOD", "HULLADEK_MEGNEVEZES",
         "Veszélyes", "Mennyiség (kg)", "Mennyiség (t)"
     ]].copy()
 
@@ -52,6 +53,7 @@ def build_detail_export(master: pd.DataFrame, source_df: pd.DataFrame) -> pd.Dat
         "CEGNEV": "Cégnév", "SRC_EMAIL": "Email", "SRC_TELEFON": "Telefonszám",
         "ADOSZAM": "Adószám", "SOURCE_KUJ": "KÜJ",
         "EV": "Év",
+        "ADATTIPUS_LABEL": "Adattípus",
         "HULLADEKKOD": "Hulladékkód", "HULLADEK_MEGNEVEZES": "Hulladék megnevezés",
     }, inplace=True)
 
@@ -66,7 +68,7 @@ def build_detail_pivot_export(master: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["Cég", "Év", "Termékcsoport", "HAK", "HAK megnevezés", "Mennyiség (t)"])
 
     df = master.copy()
-    df["Mennyiség (t)"] = (pd.to_numeric(df["OSSZES_MENNYISEG"], errors="coerce").fillna(0) / 1000).round(1)
+    df["Mennyiség (t)"] = pd.to_numeric(df["OSSZES_MENNYISEG"], errors="coerce").fillna(0) / 1000
 
     group_cols = ["CEGNEV", "EV", "PRODUCT_GROUP", "HULLADEKKOD"]
     if "HULLADEK_MEGNEVEZES" in df.columns:
@@ -137,7 +139,10 @@ def build_outline_report_sheet(ws, grouped_df: pd.DataFrame):
 
     def _border_row(r: int):
         for c in range(1, COL_QTY + 1):
-            ws.cell(row=r, column=c).border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            cell = ws.cell(row=r, column=c)
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            if cell.data_type == "f":
+                cell.data_type = "s"
 
     for company, df_company in grouped_df.groupby("Cég", sort=True):
         company_total = round(float(df_company["Mennyiség (t)"].sum()), 1)
@@ -242,7 +247,7 @@ def build_summary_export(master: pd.DataFrame, source_df: pd.DataFrame, groups: 
     src = src[src_cols].drop_duplicates(subset=["CEGNEV", "KUJ"])
 
     df = master.copy()
-    df["Mennyiség (t)"] = (pd.to_numeric(df["OSSZES_MENNYISEG"], errors="coerce").fillna(0) / 1000).round(1)
+    df["Mennyiség (t)"] = pd.to_numeric(df["OSSZES_MENNYISEG"], errors="coerce").fillna(0) / 1000
 
     pivot = (
         df.groupby(["CEGNEV", "SOURCE_KUJ", "EV", "PRODUCT_GROUP"], as_index=False)["Mennyiség (t)"]
@@ -257,12 +262,8 @@ def build_summary_export(master: pd.DataFrame, source_df: pd.DataFrame, groups: 
         .reset_index()
     )
 
-    total_base = (
-        df[["CEGNEV", "SOURCE_KUJ", "EV", "HULLADEKKOD", "ADATTIPUS_LABEL", "OSSZES_MENNYISEG"]]
-        .drop_duplicates()
-        .copy()
-    )
-    total_base["Mennyiség (t)"] = (pd.to_numeric(total_base["OSSZES_MENNYISEG"], errors="coerce").fillna(0) / 1000).round(1)
+    total_base = unique_quantities(master).copy()
+    total_base["Mennyiség (t)"] = pd.to_numeric(total_base["OSSZES_MENNYISEG"], errors="coerce").fillna(0) / 1000
     total_by_year = (
         total_base.groupby(["CEGNEV", "SOURCE_KUJ", "EV"], as_index=False)["Mennyiség (t)"]
         .sum()
@@ -306,7 +307,7 @@ def build_summary_export(master: pd.DataFrame, source_df: pd.DataFrame, groups: 
     return out.sort_values(["Cégnév", "Év"], ascending=[True, False]).reset_index(drop=True)
 
 
-def build_ktj_export(df: pd.DataFrame, ktj_service, category_service) -> pd.DataFrame:
+def build_ktj_export(df: pd.DataFrame, ktj_service, category_service, load_metadata=True) -> pd.DataFrame:
     """KTJ szerinti export DataFrame előkészítése – UI-független."""
     out = df.copy()
 
@@ -338,7 +339,8 @@ def build_ktj_export(df: pd.DataFrame, ktj_service, category_service) -> pd.Data
         out["Összes mennyiség"] = ""
         qty_col = None
 
-    ktj_service.ensure_metadata_loaded(out)
+    if load_metadata:
+        ktj_service.ensure_metadata_loaded(out)
     out = ktj_service.enrich_with_metadata(out)
 
     export_cols = [
@@ -359,7 +361,7 @@ def build_ktj_export(df: pd.DataFrame, ktj_service, category_service) -> pd.Data
         "HULLADEKKOD": "Hulladékkód", "HULLADEK_MEGNEVEZES": "Megnevezés",
     }
     if qty_col:
-        rename_map[qty_col] = "Összes mennyiség"
+        rename_map[qty_col] = "Mennyiség (kg)"
     out.rename(columns=rename_map, inplace=True)
 
     sort_cols = [c for c in ["KÜJ", "KTJ", "Cég", "Év", "Termékcsoport", "Hulladékkód"] if c in out.columns]
@@ -390,8 +392,8 @@ def write_detail_excel(path: str, master: pd.DataFrame, source_df: pd.DataFrame)
         build_outline_report_sheet(ws, pivot)
 
 
-def write_ktj_excel(path: str, df: pd.DataFrame, ktj_service, category_service) -> None:
-    out = build_ktj_export(df, ktj_service, category_service)
+def write_ktj_excel(path: str, df: pd.DataFrame, ktj_service, category_service, load_metadata=True) -> None:
+    out = build_ktj_export(df, ktj_service, category_service, load_metadata=load_metadata)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         out.to_excel(writer, index=False, sheet_name="KTJ szerint")
         style_excel_worksheet(writer.book["KTJ szerint"])
@@ -422,6 +424,8 @@ def style_excel_worksheet(ws):
     for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
         fill = sub_fill_odd if row_idx % 2 == 0 else sub_fill_even
         for cell in row:
+            if cell.data_type == "f":
+                cell.data_type = "s"
             cell.fill = fill
             cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
             cell.alignment = Alignment(vertical="center", wrap_text=True)

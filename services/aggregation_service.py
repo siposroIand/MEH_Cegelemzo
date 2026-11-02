@@ -5,6 +5,7 @@ import pandas as pd
 from core.constants import ADATTIPUS_LABELS
 from core.utils import parse_hu_numeric
 from models.records import Aggregates
+from services.filter_service import unique_quantities
 
 
 def extract_records(data: Any, preferred_key: str) -> List[Dict[str, Any]]:
@@ -46,7 +47,8 @@ def expand_multi_categories(df: pd.DataFrame, category_service) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = df.copy()
-    df["PRODUCT_GROUP"] = df["HULLADEKKOD"].map(category_service.resolve_groups)
+    groups = {code: category_service.resolve_groups(code) for code in df["HULLADEKKOD"].unique()}
+    df["PRODUCT_GROUP"] = df["HULLADEKKOD"].map(groups)
     return df.explode("PRODUCT_GROUP").reset_index(drop=True)
 
 
@@ -85,13 +87,7 @@ def aggregate_data(raw_df: pd.DataFrame, source_df: pd.DataFrame, category_servi
         .rename(columns={"MENNYISEG": "OSSZES_MENNYISEG"})
     )
 
-    base_unique = (
-        master[
-            ["CEGNEV", "SOURCE_KUJ", "EV", "HULLADEKKOD", "ADATTIPUS", "ADATTIPUS_LABEL", "OSSZES_MENNYISEG"]
-        ]
-        .drop_duplicates()
-        .copy()
-    )
+    base_unique = unique_quantities(master)
 
     company_year_category = (
         master.groupby(["CEGNEV", "EV", "PRODUCT_GROUP"], as_index=False)["OSSZES_MENNYISEG"]

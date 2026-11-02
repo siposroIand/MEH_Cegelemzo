@@ -1,5 +1,3 @@
 PySide6
-pandas
-requests
-openpyxl
+-r requirements-core.txt
 matplotlib

@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "MÉH Cégelemző",
+  "short_name": "MÉH Elemző",
+  "lang": "hu",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f3f6f7",
+  "theme_color": "#087f74",
+  "icons": [
+    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}

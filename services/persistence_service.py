@@ -61,6 +61,9 @@ class PersistenceService:
                 updated_at TEXT NOT NULL
             )
         """)
+        for table in ("snapshot_source_rows", "snapshot_raw_rows", "snapshot_missing_rows"):
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_snapshot ON {table}(snapshot_id)")
+        conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         conn.commit()
         conn.close()
 
@@ -76,33 +79,38 @@ class PersistenceService:
         note: str = "",
     ) -> int:
         conn = self._conn()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO snapshots (created_at, source_file, note) VALUES (?, ?, ?)",
-            (datetime.now().isoformat(), source_file, note),
-        )
-        snapshot_id = cur.lastrowid
-
-        for _, row in source_df.fillna("").iterrows():
-            cur.execute(
-                "INSERT INTO snapshot_source_rows (snapshot_id, data_json) VALUES (?, ?)",
-                (snapshot_id, json.dumps(row.to_dict(), ensure_ascii=False)),
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO snapshots (created_at, source_file, note) VALUES (?, ?, ?)",
+                (datetime.now().isoformat(), source_file, note),
             )
-
-        for _, row in raw_df.fillna("").iterrows():
-            cur.execute(
-                "INSERT INTO snapshot_raw_rows (snapshot_id, data_json) VALUES (?, ?)",
-                (snapshot_id, json.dumps(row.to_dict(), ensure_ascii=False)),
-            )
-
-        for _, row in missing_df.fillna("").iterrows():
-            cur.execute(
-                "INSERT INTO snapshot_missing_rows (snapshot_id, data_json) VALUES (?, ?)",
-                (snapshot_id, json.dumps(row.to_dict(), ensure_ascii=False)),
-            )
-
-        conn.commit()
+            snapshot_id = cur.lastrowid
+            for table, frame in (
+                ("snapshot_source_rows", source_df),
+                ("snapshot_raw_rows", raw_df),
+                ("snapshot_missing_rows", missing_df),
+            ):
+                conn.executemany(
+                    f"INSERT INTO {table} (snapshot_id, data_json) VALUES (?, ?)",
+                    ((snapshot_id, json.dumps(row, ensure_ascii=False))
+                     for row in frame.fillna("").to_dict(orient="records")),
+                )
         return snapshot_id
+
+    def close(self):
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
+    def get_setting(self, key):
+        row = self._conn().execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_setting(self, key, value):
+        with self._conn() as conn:
+            conn.execute("INSERT INTO app_settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (key, value))
 
     def list_snapshots(self) -> List[Tuple[int, str, str, str]]:
         conn = self._conn()
