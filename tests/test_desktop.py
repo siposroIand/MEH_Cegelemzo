@@ -58,10 +58,18 @@ class DesktopTests(unittest.TestCase):
             self.assertGreater(window.data_year_tabs.count(), 1)
             window.tabs.setCurrentIndex(3)
             self.assertEqual(window.missing_table.model().rowCount(), 1)
-            actions = [action.text() for action in window.menuBar().actions()[1].menu().actions()]
+            export_menu = window.menuBar().actions()[1].menu()
+            actions = [action.text() for action in export_menu.actions()]
+            self.assertEqual(actions[0], "Excel készítése…")
+            for action in export_menu.actions():
+                if action.menu():
+                    actions.extend(child.text() for child in action.menu().actions())
             self.assertTrue(any("mátrix" in action for action in actions))
-            for label in ("PKG", "CSV", "JSON", "teljes adatállomány"):
+            self.assertFalse(any("CSV" in action for action in actions))
+            for label in ("PKG", "JSON", "Teljes adatállomány"):
                 self.assertTrue(any(label in action for action in actions))
+            for name in ("import_button", "load_button", "matrix_button"):
+                self.assertFalse(hasattr(window, name))
             window.apply_default_year_selection()
             self.assertTrue(window.current_filters().years)
             window.reset_filters()
@@ -91,7 +99,130 @@ class DesktopTests(unittest.TestCase):
         finally:
             persistence.close()
 
-    def test_matrix_button_exports_current_filters_in_background(self):
+    def test_configured_export_captures_filters_and_creates_county_files(self):
+        from openpyxl import load_workbook
+        from PySide6.QtWidgets import QDialog
+        from services.aggregation_service import aggregate_data
+        from services.configurable_export_service import ExcelExportOptions
+        from tests.fixtures import dataset
+        from ui.main_window import MainWindow
+
+        window = MainWindow()
+        try:
+            window.source_df, window.raw_df, window.missing_df = dataset()
+            window.agg = aggregate_data(window.raw_df, window.source_df, window.category_service)
+            window.populate_filters()
+            window.filter_year.set_checked_by_user_data({2025})
+            options = ExcelExportOptions(sections=("raw",), separate_counties=True)
+            with patch("ui.main_window.ExcelExportDialog") as dialog_class, \
+                    patch("ui.main_window.QFileDialog.getExistingDirectory", return_value=self.temp.name), \
+                    patch("ui.main_window.QMessageBox.information") as success:
+                dialog_class.return_value.exec.return_value = QDialog.Accepted
+                dialog_class.return_value.options.return_value = options
+                window.export_configured()
+                self.assertIsNotNone(window._task_worker)
+                self.assertFalse(window.menuBar().isEnabled())
+                window.reset_filters()
+                self.wait_for(lambda: window._task_worker is None)
+                success.assert_called_once()
+            files = list(Path(self.temp.name).glob("meh-excel-*/*.xlsx"))
+            self.assertEqual(len(files), 2)
+            for file in files:
+                book = load_workbook(file)
+                rows = list(book["Nyers adatok (kg)"].values)
+                self.assertEqual(len(rows), 21)
+                year_column = rows[0].index("EV")
+                self.assertEqual({row[year_column] for row in rows[1:]}, {2025})
+                book.close()
+        finally:
+            window.close()
+
+    def test_configured_export_cancellation_and_empty_selection_error(self):
+        from PySide6.QtWidgets import QDialog
+        from services.aggregation_service import aggregate_data
+        from services.configurable_export_service import ExcelExportOptions
+        from tests.fixtures import dataset
+        from ui.main_window import MainWindow
+
+        window = MainWindow()
+        try:
+            window.source_df, window.raw_df, window.missing_df = dataset()
+            window.agg = aggregate_data(window.raw_df, window.source_df, window.category_service)
+            window.populate_filters()
+            path = str(Path(self.temp.name) / "empty")
+            with patch("ui.main_window.ExcelExportDialog") as dialog_class, \
+                    patch("ui.main_window.QFileDialog.getSaveFileName", return_value=(path, "")) as chooser, \
+                    patch("ui.main_window.QMessageBox.critical") as error:
+                dialog = dialog_class.return_value
+                dialog.exec.return_value = QDialog.Rejected
+                window.export_configured()
+                chooser.assert_not_called()
+                self.assertIsNone(window._task_worker)
+                dialog.exec.return_value = QDialog.Accepted
+                dialog.options.return_value = ExcelExportOptions(counties=("Nincs ilyen megye",))
+                window.export_configured()
+                self.wait_for(lambda: window._task_worker is None)
+                error.assert_called_once()
+                self.assertIn("Nincs", error.call_args.args[-1])
+                self.assertFalse(Path(path + ".xlsx").exists())
+        finally:
+            window.close()
+
+    def test_export_dialog_requires_a_sheet_and_preserves_options(self):
+        from PySide6.QtWidgets import QDialogButtonBox
+        from ui.widgets import ExcelExportDialog
+
+        dialog = ExcelExportDialog(["Pest", "Ismeretlen megye"], "Év: 2025")
+        try:
+            save = dialog.buttons.button(QDialogButtonBox.Save)
+            self.assertTrue(save.isEnabled())
+            dialog.section_checks["matrix"].setChecked(False)
+            self.assertFalse(save.isEnabled())
+            dialog.section_checks["raw"].setChecked(True)
+            dialog.counties.set_checked_by_user_data({"Pest"})
+            dialog.use_filters.setChecked(False)
+            dialog.separate_counties.setChecked(True)
+            options = dialog.options()
+            self.assertTrue(save.isEnabled())
+            self.assertEqual(options.sections, ("raw",))
+            self.assertEqual(options.counties, ("Pest",))
+            self.assertFalse(options.use_filters)
+            self.assertTrue(options.separate_counties)
+        finally:
+            dialog.close()
+
+    def test_responsive_dashboard_and_linear_filter_population(self):
+        from ui.main_window import MainWindow
+        from ui.widgets import MultiSelectComboBox
+
+        combo = MultiSelectComboBox()
+        with patch.object(combo, "_update_summary", wraps=combo._update_summary) as summary:
+            combo.add_check_items((f"Cég {index}", index) for index in range(2000))
+            summary.assert_called_once()
+        self.assertEqual(combo.count(), 2000)
+        combo.set_checked_by_user_data({0, 1999})
+        self.assertEqual(combo.checked_values(), [0, 1999])
+        window = MainWindow()
+        try:
+            window.show()
+            window.resize(1600, 980)
+            self.app.processEvents()
+            self.assertEqual(window._dashboard_columns, (5, 2))
+            window.resize(860, 600)
+            self.app.processEvents()
+            self.assertEqual(window.width(), 860)
+            self.assertEqual(window._dashboard_columns, (2, 1))
+            self.assertEqual(window.chart_grid.count(), 6)
+            self.assertEqual(window.kpi_grid.count(), 5)
+            self.assertEqual(window.dashboard_scroll.horizontalScrollBar().maximum(), 0)
+            window.resize(1600, 980)
+            self.app.processEvents()
+            self.assertEqual(window._dashboard_columns, (5, 2))
+            self.assertEqual(window.chart_grid.count(), 6)
+        finally:
+            window.close()
+
+    def test_matrix_menu_exports_current_filters_in_background(self):
         from openpyxl import load_workbook
         from ui.main_window import MainWindow
         from tests.fixtures import dataset
@@ -108,9 +239,9 @@ class DesktopTests(unittest.TestCase):
             window.filter_type.set_checked_by_user_data({"HULL_ATADAS"})
             with patch("ui.main_window.QFileDialog.getSaveFileName", return_value=(path, "")), \
                     patch("ui.main_window.QMessageBox.information") as success:
-                window.matrix_button.click()
+                window.matrix_action.trigger()
                 self.assertIsNotNone(window._task_worker)
-                self.assertFalse(window.matrix_button.isEnabled())
+                self.assertFalse(window.menuBar().isEnabled())
                 self.wait_for(lambda: window._task_worker is None)
                 success.assert_called_once()
             book = load_workbook(path)
@@ -146,7 +277,7 @@ class DesktopTests(unittest.TestCase):
             release.set()
             self.wait_for(lambda: window._task_worker is None)
             self.assertEqual(results, [True])
-            self.assertTrue(window.matrix_button.isEnabled())
+            self.assertTrue(window.menuBar().isEnabled())
         finally:
             release.set()
             self.wait_for(lambda: window._task_worker is None)
@@ -197,7 +328,6 @@ class DesktopTests(unittest.TestCase):
             window.close()
 
     def test_portable_exports_use_full_dataset_or_captured_filters(self):
-        import pandas as pd
         from openpyxl import load_workbook
         from services.aggregation_service import aggregate_data
         from services.package_service import read_package
@@ -210,8 +340,7 @@ class DesktopTests(unittest.TestCase):
             window.source_df, window.raw_df, window.missing_df = dataset()
             window.agg = aggregate_data(window.raw_df, window.source_df, window.category_service)
             window.populate_filters()
-            for kind, suffix in (("pkg", ".okirpkg"), ("json", ".json"), ("dataset", ".xlsx"),
-                                 ("raw", ".csv"), ("source", ".csv"), ("missing", ".csv")):
+            for kind, suffix in (("pkg", ".okirpkg"), ("json", ".json"), ("dataset", ".xlsx")):
                 window.filter_year.set_checked_by_user_data({2025})
                 window.filter_company.set_checked_by_user_data({"Minta Fém Kft."})
                 window.filter_code.setText("170405")
@@ -234,11 +363,6 @@ class DesktopTests(unittest.TestCase):
                     self.assertEqual(len(read_dataset(path.read_bytes())[1]), 120)
                 elif kind == "dataset":
                     self.assertEqual(load_workbook(path)["Nyers adatok (kg)"].max_row, 121)
-                else:
-                    frame = pd.read_csv(path, sep=";", decimal=",")
-                    self.assertEqual(len(frame), 20 if kind == "raw" else 1)
-                    if kind == "raw":
-                        self.assertEqual(set(frame.EV), {2025})
         finally:
             window.close()
 

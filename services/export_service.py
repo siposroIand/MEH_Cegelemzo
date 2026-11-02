@@ -12,8 +12,7 @@ from core.utils import (
 )
 
 
-def write_dataset_excel(target, source, raw, missing):
-    tables = (("Forráscégek", source), ("Nyers adatok (kg)", raw), ("Kimaradt lekérések", missing))
+def validate_excel_tables(tables):
     for _name, frame in tables:
         if len(frame) > 1_048_575 or len(frame.columns) > 16_384:
             raise ValueError("Az adatállomány túllépi az Excel sor- vagy oszlopkorlátját.")
@@ -22,16 +21,25 @@ def write_dataset_excel(target, source, raw, missing):
             for row in frame.itertuples(index=False, name=None) for value in row
         ):
             raise ValueError("Az adatállomány túllépi az Excel cellánkénti szövegkorlátját.")
+
+
+def write_excel_table(writer, name, frame):
+    frame.to_excel(writer, sheet_name=name, index=False)
+    sheet = writer.sheets[name]
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for row in sheet:
+        for cell in row:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
+
+
+def write_dataset_excel(target, source, raw, missing):
+    tables = (("Forráscégek", source), ("Nyers adatok (kg)", raw), ("Kimaradt lekérések", missing))
+    validate_excel_tables(tables)
     with pd.ExcelWriter(target, engine="openpyxl") as writer:
         for name, frame in tables:
-            frame.to_excel(writer, sheet_name=name, index=False)
-            sheet = writer.sheets[name]
-            sheet.freeze_panes = "A2"
-            sheet.auto_filter.ref = sheet.dimensions
-            for row in sheet:
-                for cell in row:
-                    if isinstance(cell.value, str):
-                        cell.data_type = "s"
+            write_excel_table(writer, name, frame)
 
 
 def build_detail_export(master: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
@@ -62,7 +70,6 @@ def build_detail_export(master: pd.DataFrame, source_df: pd.DataFrame) -> pd.Dat
         lambda x: "Igen" if pd.to_numeric(x, errors="coerce") == 1 else "Nem"
     )
     out = pd.concat([out, parts], axis=1)
-    out.rename(columns={"Vármegye": "Megye"}, inplace=True)
 
     out = out[[
         "CEGNEV", "Megye", "IRSZ", "Település", "Cím",
@@ -297,7 +304,6 @@ def build_summary_export(master: pd.DataFrame, source_df: pd.DataFrame, groups: 
 
     parts = out["SZEKHELY"].apply(split_address_parts).apply(pd.Series)
     out = pd.concat([out, parts], axis=1)
-    out.rename(columns={"Vármegye": "Megye"}, inplace=True)
 
     out["Telefonszám"] = out["SRC_TELEFON"].apply(format_phone)
     out["SRC_SAJAT_TOKE_NUM"] = parse_hu_numeric(out["SRC_SAJAT_TOKE"]).fillna(0).round(0).astype("Int64")
@@ -395,7 +401,7 @@ def build_ktj_export(df: pd.DataFrame, ktj_service, category_service, load_metad
 # ---------------------------------------------------------------------------
 
 def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str = "Összes adat",
-                           *, by_year: bool = False) -> None:
+                           *, by_year: bool = False, workbook=None) -> None:
     from openpyxl import Workbook
     from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -426,7 +432,9 @@ def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str =
         .agg(lambda values: "; ".join(sorted({str(value).strip() for value in values.dropna() if str(value).strip()})))
         .to_dict()
     )
-    workbook = Workbook(write_only=True)
+    owns_workbook = workbook is None
+    if owns_workbook:
+        workbook = Workbook(write_only=True)
     sheet = workbook.create_sheet("Cég–Év–HAK mátrix" if by_year else "Cég–HAK mátrix")
     sheet.freeze_panes = f"B{header_count + 1}"
     sheet.sheet_view.showGridLines = False
@@ -521,7 +529,8 @@ def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str =
         cell = literal_cell(info, value)
         cell.alignment = wrapped
         info.append([literal_cell(info, label), cell])
-    workbook.save(path)
+    if owns_workbook:
+        workbook.save(path)
 
 
 def write_missing_excel(path, missing: pd.DataFrame) -> None:
