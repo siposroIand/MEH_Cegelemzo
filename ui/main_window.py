@@ -1,4 +1,5 @@
 from pathlib import Path
+import zipfile
 
 import pandas as pd
 from PySide6.QtCore import Qt, QTimer
@@ -54,6 +55,7 @@ from services.aggregation_service import aggregate_data
 from services.cache_db import CacheDB
 from services.category_service import CategoryService
 from services.export_service import (
+    write_dataset_excel,
     write_detail_excel,
     write_hak_matrix_excel,
     write_ktj_excel,
@@ -62,7 +64,8 @@ from services.export_service import (
 )
 from services.desktop_export_service import atomic_export
 from services.filter_service import Filters, filter_frame, unique_quantities
-from services.report_service import read_dataset, report_html
+from services.report_service import csv_bytes, dataset_bytes, read_dataset, report_html
+from services.package_service import MAX_PACKAGE_BYTES, read_package, write_package
 from services.ktj_service import KtjService
 from services.persistence_service import PersistenceService
 from ui.widgets import (
@@ -270,9 +273,12 @@ class MainWindow(QMainWindow):
         load_snapshot_action.triggered.connect(self.load_snapshot)
         import_menu.addAction(load_snapshot_action)
 
-        import_json_action = QAction("Régi MÉH JSON mentés betöltése", self)
+        import_json_action = QAction("MÉH JSON mentés betöltése", self)
         import_json_action.triggered.connect(self.import_json)
         import_menu.addAction(import_json_action)
+        package_action = QAction("Megosztható PKG betöltése (régi csomag is)", self)
+        package_action.triggered.connect(self.import_shared_package)
+        import_menu.addAction(package_action)
 
         export_menu = menubar.addMenu("Exportálás")
         save_snapshot_action = QAction("Helyi mentés készítése", self)
@@ -301,6 +307,18 @@ class MainWindow(QMainWindow):
         report_action = QAction("Vezetői riport (HTML / nyomtatás PDF-be)", self)
         report_action.triggered.connect(self.export_report)
         export_menu.addAction(report_action)
+        export_menu.addSeparator()
+        for label, kind in (
+            ("Megosztható PKG (teljes munkamenet)", "pkg"),
+            ("MÉH JSON (teljes adatállomány, visszaimportálható)", "json"),
+            ("Excel teljes adatállomány (forrás, nyers adatok, hibák)", "dataset"),
+            ("CSV nyers adatok (aktuális szűrés, kg)", "raw"),
+            ("CSV forráscégek (cégszűrés)", "source"),
+            ("CSV kimaradt lekérések (teljes lista)", "missing"),
+        ):
+            action = QAction(label, self)
+            action.triggered.connect(lambda checked=False, selected=kind: self.export_portable(selected))
+            export_menu.addAction(action)
 
         program_menu = menubar.addMenu("Program")
         clear_cache_action = QAction("Gyorsítótár törlése", self)
@@ -1712,16 +1730,20 @@ class MainWindow(QMainWindow):
                 self.on_tab_changed(2)
 
     def _export_excel(self, filename, writer, *args, **kwargs):
+        self._export_file(filename, "Excel (*.xlsx)", writer, *args, **kwargs)
+
+    def _export_file(self, filename, file_filter, writer, *args, **kwargs):
         if self._is_busy():
             QMessageBox.warning(self, "Folyamatban", "Várd meg a folyamatban lévő műveletet.")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Excel export mentése", str(OUTPUT_DIR / filename), "Excel (*.xlsx)",
+            self, "Export mentése", str(OUTPUT_DIR / filename), file_filter,
         )
         if not path:
             return
-        if not path.lower().endswith(".xlsx"):
-            path += ".xlsx"
+        suffix = Path(filename).suffix
+        if not path.lower().endswith(suffix):
+            path += suffix
 
         def operation():
             try:
@@ -1729,7 +1751,44 @@ class MainWindow(QMainWindow):
             finally:
                 self.persistence.close()
 
-        self._run_task("Excel export készítése a háttérben...", operation, self._export_done)
+        self._run_task("Export készítése a háttérben...", operation, self._export_done)
+
+    def export_portable(self, kind):
+        if self.source_df.empty and self.raw_df.empty and self.missing_df.empty:
+            QMessageBox.warning(self, "Nincs adat", "Nincs exportálható adatállomány.")
+            return
+        if kind in {"pkg", "json", "dataset"}:
+            tables = (self.source_df.copy(), self.raw_df.copy(), self.missing_df.copy())
+            if kind == "pkg":
+                state = self.capture_state()
+
+                def writer(path, source, raw, missing):
+                    write_package(path, source, raw, missing, state, self.ktj_service.export_metadata(raw))
+
+                self._export_file("meh-megoszthato.okirpkg", "MÉH PKG (*.okirpkg)", writer, *tables)
+            elif kind == "json":
+                self._export_file(
+                    "meh-adatok.json", "MÉH JSON (*.json)",
+                    lambda path, *frames: Path(path).write_bytes(dataset_bytes(*frames)), *tables,
+                )
+            else:
+                self._export_excel("meh-teljes-adatallomany.xlsx", write_dataset_excel, *tables)
+        else:
+            if kind == "raw":
+                frame = self.get_filtered_raw()
+            elif kind == "source":
+                frame = self.source_df
+                companies = self.current_filters().companies
+                if companies and not frame.empty:
+                    frame = frame[frame["CEGNEV"].isin(companies)]
+            elif kind == "missing":
+                frame = self.missing_df
+            else:
+                raise ValueError("Ismeretlen export.")
+            self._export_file(
+                f"meh-{kind}.csv", "CSV (*.csv)",
+                lambda path, data: Path(path).write_bytes(csv_bytes(data)), frame.copy(),
+            )
 
     def _export_done(self, path):
         self.set_status(f"Export elkészült: {path}", 100, 100)
@@ -1797,30 +1856,70 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Kész", "A gyorsítótár törölve lett.")
 
     def import_json(self):
+        self._import_portable(False)
+
+    def import_shared_package(self):
+        self._import_portable(True)
+
+    def _import_portable(self, package):
         if self._is_busy():
             QMessageBox.warning(self, "Folyamatban", "Várd meg a folyamatban lévő lekérést.")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "MÉH JSON betöltése", "", "MÉH JSON (*.json)")
+        file_filter = "MÉH PKG (*.okirpkg *.pkg *.zip)" if package else "MÉH JSON (*.json)"
+        path, _ = QFileDialog.getOpenFileName(self, "Mentés betöltése", "", file_filter)
         if not path:
             return
+        allow_legacy = False
+        if package:
+            try:
+                if Path(path).stat().st_size > MAX_PACKAGE_BYTES:
+                    raise ValueError("A PKG fájl legfeljebb 100 MB lehet.")
+                with zipfile.ZipFile(path) as archive:
+                    legacy = "dataset.json" not in archive.namelist()
+            except (OSError, ValueError, zipfile.BadZipFile) as exc:
+                QMessageBox.critical(self, "PKG betöltési hiba", str(exc))
+                return
+            if legacy:
+                answer = QMessageBox.question(
+                    self, "Régi PKG betöltése",
+                    "Ez egy régi, pickle-alapú csomag. Csak saját vagy megbízható forrásból "
+                    "származó fájlt tölts be. A korlátozott olvasó nem támogat minden pandas-típust. "
+                    "Folytatod a betöltést?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+                allow_legacy = True
         def operation():
-            source, raw, missing = read_dataset(Path(path).read_bytes())
+            data = Path(path).read_bytes()
+            state, metadata = {}, {}
+            if package:
+                source, raw, missing, state, metadata = read_package(data, allow_legacy=allow_legacy)
+            else:
+                source, raw, missing = read_dataset(data)
+            if source.empty and raw.empty and missing.empty:
+                raise ValueError("A fájl nem tartalmaz feldolgozható adatot.")
             aggregates = aggregate_data(raw, source, self.category_service)
             try:
-                sid = self.persistence.save_snapshot(source, raw, missing, path, "Régi JSON import")
+                for ktj, payload in metadata.items():
+                    self.persistence.save_ktj_meta(ktj, payload)
+                sid = self.persistence.save_snapshot(source, raw, missing, path, "PKG import" if package else "JSON import")
                 self.persistence.set_setting("desktop_active_snapshot", str(sid))
             finally:
                 self.persistence.close()
-            return source, raw, missing, aggregates
+            return source, raw, missing, aggregates, state, metadata
 
         def completed(result):
-            source, raw, missing, aggregates = result
+            source, raw, missing, aggregates, state, metadata = result
+            self.ktj_service.cache.update(metadata)
             self.current_file_path = path
             self.current_file_label.setText(path)
             years = raw["EV"].dropna() if not raw.empty else pd.Series(dtype=float)
             self.on_fetch_finished(source, raw, missing, int(years.max()) if not years.empty else None, aggregates)
+            if state:
+                self.restore_state({**state, "current_file_path": path})
 
-        self._run_task("Régi mentés betöltése...", operation, completed)
+        self._run_task("Mentés betöltése...", operation, completed)
 
     def export_report(self):
         path, _ = QFileDialog.getSaveFileName(

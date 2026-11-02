@@ -60,7 +60,8 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(window.missing_table.model().rowCount(), 1)
             actions = [action.text() for action in window.menuBar().actions()[1].menu().actions()]
             self.assertTrue(any("mátrix" in action for action in actions))
-            self.assertFalse(any("CSV" in action or "JSON" in action for action in actions))
+            for label in ("PKG", "CSV", "JSON", "teljes adatállomány"):
+                self.assertTrue(any(label in action for action in actions))
             window.apply_default_year_selection()
             self.assertTrue(window.current_filters().years)
             window.reset_filters()
@@ -192,6 +193,115 @@ class DesktopTests(unittest.TestCase):
             self.wait_for(lambda: not window.raw_df.empty and window._task_worker is None)
             self.assertEqual(len(window.raw_df), len(raw))
             self.assertEqual(window.current_file_label.text(), "minta.xlsx")
+        finally:
+            window.close()
+
+    def test_portable_exports_use_full_dataset_or_captured_filters(self):
+        import pandas as pd
+        from openpyxl import load_workbook
+        from services.aggregation_service import aggregate_data
+        from services.package_service import read_package
+        from services.report_service import read_dataset
+        from tests.fixtures import dataset
+        from ui.main_window import MainWindow
+
+        window = MainWindow()
+        try:
+            window.source_df, window.raw_df, window.missing_df = dataset()
+            window.agg = aggregate_data(window.raw_df, window.source_df, window.category_service)
+            window.populate_filters()
+            for kind, suffix in (("pkg", ".okirpkg"), ("json", ".json"), ("dataset", ".xlsx"),
+                                 ("raw", ".csv"), ("source", ".csv"), ("missing", ".csv")):
+                window.filter_year.set_checked_by_user_data({2025})
+                window.filter_company.set_checked_by_user_data({"Minta Fém Kft."})
+                window.filter_code.setText("170405")
+                path = Path(self.temp.name) / kind
+                with patch("ui.main_window.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+                        patch("ui.main_window.QMessageBox.information") as success:
+                    window.export_portable(kind)
+                    self.assertIsNotNone(window._task_worker)
+                    window.reset_filters()
+                    self.wait_for(lambda: window._task_worker is None)
+                    success.assert_called_once()
+                path = path.with_suffix(suffix)
+                self.assertTrue(path.exists())
+                if kind == "pkg":
+                    result = read_package(path.read_bytes())
+                    self.assertEqual(len(result[1]), 120)
+                    self.assertEqual(result[3]["selected_years"], [2025])
+                    self.assertEqual(result[3]["filter_code"], "170405")
+                elif kind == "json":
+                    self.assertEqual(len(read_dataset(path.read_bytes())[1]), 120)
+                elif kind == "dataset":
+                    self.assertEqual(load_workbook(path)["Nyers adatok (kg)"].max_row, 121)
+                else:
+                    frame = pd.read_csv(path, sep=";", decimal=",")
+                    self.assertEqual(len(frame), 20 if kind == "raw" else 1)
+                    if kind == "raw":
+                        self.assertEqual(set(frame.EV), {2025})
+        finally:
+            window.close()
+
+    def test_package_import_restores_state_metadata_and_persistent_snapshot(self):
+        from services.package_service import write_package
+        from tests.fixtures import dataset
+        from tests.test_portable import legacy_package
+        from ui.main_window import MainWindow
+        from PySide6.QtWidgets import QMessageBox
+
+        window = MainWindow()
+        self.app.processEvents()
+        tables = dataset()
+        state = {"selected_years": [2025], "filter_code": "170405"}
+        metadata = {"1000000": {"MEGNEVEZES": "Mentett telephely"}}
+        try:
+            for legacy in (False, True):
+                path = Path(self.temp.name) / ("legacy.okirpkg" if legacy else "modern.okirpkg")
+                if legacy:
+                    path.write_bytes(legacy_package(tables, state, metadata))
+                    with patch("ui.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
+                            patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.No):
+                        window.import_shared_package()
+                        self.assertIsNone(window._task_worker)
+                else:
+                    write_package(path, *tables, state, metadata)
+                with patch("ui.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
+                        patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.Yes), \
+                        patch("ui.main_window.QMessageBox.information"), \
+                        patch("ui.main_window.QMessageBox.critical") as failure:
+                    window.import_shared_package()
+                    self.wait_for(lambda: window._task_worker is None)
+                    failure.assert_not_called()
+                self.assertEqual(len(window.raw_df), 120)
+                self.assertEqual(window.current_filters().years, (2025,))
+                self.assertEqual(window.filter_code.text(), "170405")
+                self.assertEqual(window.ktj_service.cache, metadata)
+                sid = int(window.persistence.get_setting("desktop_active_snapshot"))
+                self.assertEqual(len(window.persistence.load_snapshot(sid)[1]), 120)
+                self.assertEqual(window.persistence.load_ktj_meta("1000000"), metadata["1000000"])
+        finally:
+            window.close()
+
+    def test_invalid_package_preserves_active_data(self):
+        import zipfile
+        from tests.fixtures import dataset
+        from ui.main_window import MainWindow
+
+        window = MainWindow()
+        self.app.processEvents()
+        window.source_df, window.raw_df, window.missing_df = dataset()
+        original = window.raw_df
+        path = Path(self.temp.name) / "bad.okirpkg"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("dataset.json", '{"format":"invalid"}')
+        try:
+            with patch("ui.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
+                    patch("ui.main_window.QMessageBox.critical") as failure:
+                window.import_shared_package()
+                self.wait_for(lambda: window._task_worker is None)
+                failure.assert_called_once()
+            self.assertIs(window.raw_df, original)
+            self.assertEqual(window.persistence.list_snapshots(), [])
         finally:
             window.close()
 

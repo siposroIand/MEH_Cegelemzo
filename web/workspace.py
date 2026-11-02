@@ -41,13 +41,16 @@ class Workspace:
             selected = next((row for row in snapshots if str(row[0]) == active), snapshots[0])
             self.replace(*persistence.load_snapshot(selected[0]), selected[2], persist=False)
 
-    def replace(self, source, raw, missing, filename, persist=True):
+    def replace(self, source, raw, missing, filename, persist=True, metadata=None):
         aggregates = aggregate_data(raw, source, self.categories)
         if persist:
+            for ktj, payload in (metadata or {}).items():
+                self.persistence.save_ktj_meta(ktj, payload)
             sid = self.persistence.save_snapshot(source, raw, missing, filename, "Automatikus webes mentés")
             self.persistence.set_setting("web_active_snapshot", str(sid))
         with self.lock:
             self.dataset = Dataset(source, raw, missing, aggregates, filename)
+            self.ktj.cache.update(metadata or {})
             self.filtered.cache_clear()
 
     def progress(self, step, total, message):
