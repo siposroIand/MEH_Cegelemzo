@@ -2,13 +2,14 @@ from pathlib import Path
 import zipfile
 
 import pandas as pd
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
     QDialog,
     QFormLayout,
     QGroupBox,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -63,14 +64,16 @@ from services.export_service import (
     write_summary_excel,
 )
 from services.desktop_export_service import atomic_export
+from services.configurable_export_service import available_counties, export_configured_excel
 from services.filter_service import Filters, filter_frame, unique_quantities
-from services.report_service import csv_bytes, dataset_bytes, read_dataset, report_html
+from services.report_service import dataset_bytes, read_dataset, report_html
 from services.package_service import MAX_PACKAGE_BYTES, read_package, write_package
 from services.ktj_service import KtjService
 from services.persistence_service import PersistenceService
 from ui.widgets import (
     ChartPanel,
     DashboardCard,
+    ExcelExportDialog,
     FullscreenChartDialog,
     ImportDatabaseDialog,
     LogDialog,
@@ -86,7 +89,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("MÉH Zrt. - Cégelemző")
         self.resize(1600, 980)
-        self.setMinimumSize(1000, 680)
+        self.setMinimumSize(860, 600)
         self._task_worker = None
         self._task_success = None
 
@@ -265,11 +268,12 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
 
         import_menu = menubar.addMenu("Importálás")
-        browse_new_action = QAction("Új adatbázis tallózása", self)
+        browse_new_action = QAction("Excel betöltése…", self)
+        browse_new_action.setShortcut("Ctrl+O")
         browse_new_action.triggered.connect(self.open_import_dialog)
         import_menu.addAction(browse_new_action)
 
-        load_snapshot_action = QAction("Betöltés helyi mentésből", self)
+        load_snapshot_action = QAction("Korábbi helyi mentés betöltése…", self)
         load_snapshot_action.triggered.connect(self.load_snapshot)
         import_menu.addAction(load_snapshot_action)
 
@@ -281,44 +285,51 @@ class MainWindow(QMainWindow):
         import_menu.addAction(package_action)
 
         export_menu = menubar.addMenu("Exportálás")
-        save_snapshot_action = QAction("Helyi mentés készítése", self)
-        save_snapshot_action.triggered.connect(self.save_snapshot)
-        export_menu.addAction(save_snapshot_action)
-
-        matrix_action = QAction("Excel mátrix (Cég × Év / HAK)", self)
-        matrix_action.triggered.connect(self.export_hak_matrix)
-        export_menu.addAction(matrix_action)
+        configure_action = QAction("Excel készítése…", self)
+        configure_action.setShortcut("Ctrl+Shift+E")
+        configure_action.triggered.connect(self.export_configured)
+        export_menu.addAction(configure_action)
         export_menu.addSeparator()
 
+        excel_menu = export_menu.addMenu("Gyors Excel-kimutatások")
+        self.matrix_action = QAction("Cég × Év / HAK mátrix", self)
+        self.matrix_action.triggered.connect(self.export_hak_matrix)
+        excel_menu.addAction(self.matrix_action)
         export_summary_action = QAction("Excel összesítő (termékcsoportonként)", self)
         export_summary_action.triggered.connect(self.export_summary_excel)
-        export_menu.addAction(export_summary_action)
+        excel_menu.addAction(export_summary_action)
 
         export_detail_action = QAction("Excel részletes (HAK szerint)", self)
         export_detail_action.triggered.connect(self.export_detail_excel)
-        export_menu.addAction(export_detail_action)
+        excel_menu.addAction(export_detail_action)
 
         export_ktj_action = QAction("Excel export (KTJ szerint)", self)
         export_ktj_action.triggered.connect(self.export_ktj_excel)
-        export_menu.addAction(export_ktj_action)
+        excel_menu.addAction(export_ktj_action)
         missing_action = QAction("Kimaradt / hibás lekérések (Excel)", self)
         missing_action.triggered.connect(self.export_missing_excel)
-        export_menu.addAction(missing_action)
+        excel_menu.addAction(missing_action)
+        dataset_action = QAction("Teljes adatállomány (szűréstől függetlenül)", self)
+        dataset_action.triggered.connect(lambda: self.export_portable("dataset"))
+        excel_menu.addSeparator()
+        excel_menu.addAction(dataset_action)
+        report_menu = export_menu.addMenu("Riportok")
         report_action = QAction("Vezetői riport (HTML / nyomtatás PDF-be)", self)
         report_action.triggered.connect(self.export_report)
-        export_menu.addAction(report_action)
+        report_menu.addAction(report_action)
         export_menu.addSeparator()
+        save_menu = export_menu.addMenu("Mentés és megosztás")
+        save_snapshot_action = QAction("Helyi mentés készítése", self)
+        save_snapshot_action.triggered.connect(self.save_snapshot)
+        save_menu.addAction(save_snapshot_action)
+        save_menu.addSeparator()
         for label, kind in (
             ("Megosztható PKG (teljes munkamenet)", "pkg"),
             ("MÉH JSON (teljes adatállomány, visszaimportálható)", "json"),
-            ("Excel teljes adatállomány (forrás, nyers adatok, hibák)", "dataset"),
-            ("CSV nyers adatok (aktuális szűrés, kg)", "raw"),
-            ("CSV forráscégek (cégszűrés)", "source"),
-            ("CSV kimaradt lekérések (teljes lista)", "missing"),
         ):
             action = QAction(label, self)
             action.triggered.connect(lambda checked=False, selected=kind: self.export_portable(selected))
-            export_menu.addAction(action)
+            save_menu.addAction(action)
 
         program_menu = menubar.addMenu("Program")
         clear_cache_action = QAction("Gyorsítótár törlése", self)
@@ -349,29 +360,22 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         header.addWidget(title)
         header.addStretch()
-        self.import_button = QPushButton("Excel betöltése")
-        self.import_button.clicked.connect(self.open_import_dialog)
-        header.addWidget(self.import_button)
-        self.load_button = QPushButton("Korábbi mentés")
-        self.load_button.clicked.connect(self.load_snapshot)
-        header.addWidget(self.load_button)
-        self.matrix_button = QPushButton("Cég × Év / HAK mátrix")
-        self.matrix_button.setObjectName("primaryButton")
-        self.matrix_button.setToolTip("Cégek sorokban, év–HAK–megnevezés oszlopokban; mennyiség tonnában.")
-        self.matrix_button.clicked.connect(self.export_hak_matrix)
-        header.addWidget(self.matrix_button)
         root.addLayout(header)
 
-        status_wrap = QHBoxLayout()
         self.status_label = QLabel("Készen áll.")
+        self.status_label.setWordWrap(True)
         self.progress = QProgressBar()
-        self.progress.setMaximumHeight(14)
+        self.progress.setFixedSize(160, 6)
         self.progress.setTextVisible(False)
-        status_wrap.addWidget(self.status_label, 2)
-        status_wrap.addWidget(self.progress, 3)
-        root.addLayout(status_wrap)
+        self.progress.hide()
+        self.statusBar().setSizeGripEnabled(True)
+        self.statusBar().addWidget(self.status_label, 1)
+        self.statusBar().addPermanentWidget(self.progress)
 
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(8)
+        splitter.setOpaqueResize(False)
         root.addWidget(splitter, 1)
 
         # bal oldal
@@ -382,6 +386,7 @@ class MainWindow(QMainWindow):
 
         source_group = QGroupBox("Aktuális lekérdezés")
         source_form = QFormLayout(source_group)
+        source_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.current_file_label = QLabel("-")
         self.current_file_label.setWordWrap(True)
         self.current_type_label = QLabel("-")
@@ -392,6 +397,8 @@ class MainWindow(QMainWindow):
 
         filter_group = QGroupBox("Szűrők")
         form = QFormLayout(filter_group)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.filter_company = MultiSelectComboBox("Összes")
         self.filter_year = MultiSelectComboBox("Összes")
         self.filter_category = MultiSelectComboBox("Összes")
@@ -425,7 +432,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.exec_text, 1)
         left_layout.addWidget(QLabel("Cégadatok"))
         left_layout.addWidget(self.company_info, 1)
-        splitter.addWidget(left)
+        sidebar = QScrollArea()
+        sidebar.setWidgetResizable(True)
+        sidebar.setFrameShape(QScrollArea.NoFrame)
+        sidebar.setMinimumWidth(250)
+        sidebar.setWidget(left)
+        splitter.addWidget(sidebar)
 
         # jobb oldal
         right = QWidget()
@@ -433,6 +445,7 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
         self.tab_dashboard = QWidget()
         self.tab_data = QWidget()
         self.tab_ktj = QWidget()
@@ -446,6 +459,8 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(self.tabs)
         splitter.addWidget(right)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         splitter.setSizes([330, 1270])
 
         self._build_dashboard_tab()
@@ -503,11 +518,33 @@ class MainWindow(QMainWindow):
                 padding: 6px 10px;
             }
             QPushButton:hover { background: #f1f5f9; }
+            QPushButton:focus, QLineEdit:focus, QComboBox:focus {
+                border: 1px solid #087f74;
+            }
             QPushButton:disabled { color: #94a3b8; background: #eef2f7; }
             #primaryButton { background: #087f74; color: white; border: none; padding: 10px 18px; font-weight: 700; }
             #primaryButton:hover { background: #06665d; }
             #primaryButton:disabled { background: #b6d5d0; }
             #appTitle { font-size: 22px; font-weight: 700; }
+            #mutedLabel { color: #64748b; background: transparent; }
+            QMenuBar { background: white; padding: 4px; border-bottom: 1px solid #e2e8f0; }
+            QMenuBar::item { padding: 6px 12px; border-radius: 6px; }
+            QMenuBar::item:selected, QMenu::item:selected { background: #e4f2ee; color: #065f56; }
+            QMenu { background: white; border: 1px solid #dde5ef; padding: 6px; }
+            QMenu::item { padding: 8px 26px; border-radius: 4px; }
+            QMenu::separator { height: 1px; background: #e2e8f0; margin: 5px 8px; }
+            QStatusBar { background: white; border-top: 1px solid #e2e8f0; padding: 4px; }
+            QStatusBar::item { border: none; }
+            QProgressBar { border: none; background: #e4f2ee; border-radius: 3px; }
+            QProgressBar::chunk { background: #087f74; border-radius: 3px; }
+            QSplitter::handle { background: transparent; }
+            QSplitter::handle:hover { background: #d7e9e5; }
+            QScrollBar:vertical { width: 10px; background: transparent; margin: 0; }
+            QScrollBar::handle:vertical { background: #cbd5e1; border-radius: 5px; min-height: 28px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+            QTableView { gridline-color: #edf2f7; selection-background-color: #e4f2ee; selection-color: #0f172a; }
+            QHeaderView::section { background: #f1f5f9; border: none; border-bottom: 1px solid #dde5ef; padding: 8px; }
             QLineEdit, QComboBox, QTextEdit, QTableView {
                 background: white;
                 border: 1px solid #cbd5e1;
@@ -524,7 +561,7 @@ class MainWindow(QMainWindow):
                 font-size: 20px;
                 font-weight: 800;
             }
-            #dashboardCardSubtitle {
+            #dashboardCardSub {
                 color: #94a3b8;
                 font-size: 11px;
             }
@@ -550,57 +587,38 @@ class MainWindow(QMainWindow):
         self.dashboard_layout.setSpacing(6)
 
         # KPI sor
-        kpi_row = QHBoxLayout()
-        kpi_row.setSpacing(6)
+        self.kpi_grid = QGridLayout()
+        self.kpi_grid.setSpacing(10)
         self.kpi_total = DashboardCard("Összes mennyiség", "Valós összesített mennyiség")
         self.kpi_companies = DashboardCard("Cégek száma", "Szűrt eredmény")
         self.kpi_codes = DashboardCard("Hulladékkódok", "Egyedi HAK")
         self.kpi_danger = DashboardCard("Veszélyességi arány", "Összmennyiség alapján")
         self.kpi_years = DashboardCard("Vizsgált évek", "Aktuális szűrés")
-        for card in [self.kpi_total, self.kpi_companies, self.kpi_codes, self.kpi_danger, self.kpi_years]:
-            kpi_row.addWidget(card)
-        self.dashboard_layout.addLayout(kpi_row)
+        self.kpi_cards = [self.kpi_total, self.kpi_companies, self.kpi_codes, self.kpi_danger, self.kpi_years]
+        self.dashboard_layout.addLayout(self.kpi_grid)
 
-        # Sor 1: Éves trend (2/3) | Árbevétel (1/3)
-        row1 = QHBoxLayout()
-        row1.setSpacing(6)
+        self.chart_grid = QGridLayout()
+        self.chart_grid.setSpacing(10)
         self.panel_yearly = ChartPanel("Éves trend", lambda: self.open_chart("Éves trend", self.render_yearly_chart))
         self.panel_finance = ChartPanel("Árbevétel / saját tőke", lambda: self.open_chart("Árbevétel / saját tőke", self.render_finance_chart))
-        self.panel_yearly.setMinimumHeight(210)
-        self.panel_yearly.setMaximumHeight(260)
-        self.panel_finance.setMinimumHeight(210)
-        self.panel_finance.setMaximumHeight(260)
-        row1.addWidget(self.panel_yearly, 2)
-        row1.addWidget(self.panel_finance, 1)
-        self.dashboard_layout.addLayout(row1)
 
-        # Sor 2: Top cégek (1/2) | Termékcsoportok (1/2)
-        row2 = QHBoxLayout()
-        row2.setSpacing(6)
         self.panel_company = ChartPanel("Top cégek összetétele", lambda: self.open_chart("Top cégek összetétele", self.render_company_chart))
         self.panel_category = ChartPanel("Termékcsoportok megoszlása", lambda: self.open_chart("Termékcsoportok megoszlása", self.render_category_chart))
-        self.panel_company.setMinimumHeight(220)
-        self.panel_company.setMaximumHeight(280)
-        self.panel_category.setMinimumHeight(220)
-        self.panel_category.setMaximumHeight(280)
-        row2.addWidget(self.panel_company, 1)
-        row2.addWidget(self.panel_category, 1)
-        self.dashboard_layout.addLayout(row2)
 
-        # Sor 3: Veszélyesség (1/3) | HAK bontás (2/3)
-        row3 = QHBoxLayout()
-        row3.setSpacing(6)
         self.panel_danger = ChartPanel("Veszélyességi megoszlás", lambda: self.open_chart("Veszélyességi megoszlás", self.render_danger_chart))
         self.panel_hak_breakdown = ChartPanel("Kategória bontás (HAK)", lambda: self.open_chart("Kategória bontás (HAK)", self.render_hak_breakdown_chart))
-        self.panel_danger.setMinimumHeight(220)
-        self.panel_danger.setMaximumHeight(280)
-        self.panel_hak_breakdown.setMinimumHeight(220)
-        self.panel_hak_breakdown.setMaximumHeight(280)
-        row3.addWidget(self.panel_danger, 1)
-        row3.addWidget(self.panel_hak_breakdown, 2)
-        self.dashboard_layout.addLayout(row3)
+        self.chart_panels = [
+            self.panel_yearly, self.panel_finance, self.panel_company,
+            self.panel_category, self.panel_danger, self.panel_hak_breakdown,
+        ]
+        for panel in self.chart_panels:
+            panel.setMinimumHeight(260)
+        self.dashboard_layout.addLayout(self.chart_grid)
+        self._dashboard_columns = None
+        self._reflow_dashboard(1200)
 
         self.dashboard_scroll.setWidget(self.dashboard_content)
+        self.dashboard_scroll.viewport().installEventFilter(self)
         root.addWidget(self.dashboard_scroll, 1)
 
         # drill-down összekötések
@@ -609,6 +627,29 @@ class MainWindow(QMainWindow):
         self.panel_company.canvas.clickedTarget.connect(self.on_dashboard_drilldown)
         self.panel_finance.canvas.clickedTarget.connect(self.on_dashboard_drilldown)
         self.panel_hak_breakdown.canvas.clickedTarget.connect(self.on_dashboard_drilldown)
+
+    def eventFilter(self, watched, event):
+        if watched is self.dashboard_scroll.viewport() and event.type() == QEvent.Resize:
+            self._reflow_dashboard(event.size().width())
+        return super().eventFilter(watched, event)
+
+    def _reflow_dashboard(self, width):
+        columns = (5 if width >= 1000 else 3 if width >= 650 else 2, 2 if width >= 900 else 1)
+        if columns == self._dashboard_columns:
+            return
+        self._dashboard_columns = columns
+        for grid, widgets, count in (
+            (self.kpi_grid, self.kpi_cards, columns[0]),
+            (self.chart_grid, self.chart_panels, columns[1]),
+        ):
+            while grid.count():
+                grid.takeAt(0)
+            for index in range(grid.columnCount()):
+                grid.setColumnStretch(index, 0)
+            for index, widget in enumerate(widgets):
+                grid.addWidget(widget, index // count, index % count)
+            for index in range(count):
+                grid.setColumnStretch(index, 1)
 
     def _build_data_tab(self):
         layout = QVBoxLayout(self.tab_data)
@@ -793,16 +834,19 @@ class MainWindow(QMainWindow):
 
         try:
             if "CEGNEV" in master.columns:
-                for c in sorted(master["CEGNEV"].dropna().astype(str).unique()):
-                    self.filter_company.add_check_item(c, False, c)
+                self.filter_company.add_check_items(
+                    (c, c) for c in sorted(master["CEGNEV"].dropna().astype(str).unique())
+                )
 
             if "EV" in master.columns:
-                for y in sorted(master["EV"].dropna().astype(int).unique(), reverse=True):
-                    self.filter_year.add_check_item(str(y), False, int(y))
+                self.filter_year.add_check_items(
+                    (str(y), int(y)) for y in sorted(master["EV"].dropna().astype(int).unique(), reverse=True)
+                )
 
             if "PRODUCT_GROUP" in master.columns:
-                for g in sorted(master["PRODUCT_GROUP"].dropna().astype(str).unique()):
-                    self.filter_category.add_check_item(g, False, g)
+                self.filter_category.add_check_items(
+                    (g, g) for g in sorted(master["PRODUCT_GROUP"].dropna().astype(str).unique())
+                )
         finally:
             for combo in [self.filter_company, self.filter_year, self.filter_category]:
                 combo.blockSignals(False)
@@ -1537,7 +1581,7 @@ class MainWindow(QMainWindow):
             f"Cég: {safe_str(row.get('CEGNEV'))}",
             f"KÜJ: {safe_str(row.get('KUJ'))}",
             f"Adószám: {safe_str(row.get('ADOSZAM'))}",
-            f"Vármegye: {safe_str(address.get('Vármegye'))}",
+            f"Megye: {safe_str(address.get('Megye'))}",
             f"IRSZ: {safe_str(address.get('IRSZ'))}",
             f"Település: {safe_str(address.get('Település'))}",
             f"Cím: {safe_str(address.get('Cím'))}",
@@ -1686,8 +1730,7 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy):
         self.menuBar().setEnabled(not busy)
-        for button in (self.import_button, self.load_button, self.matrix_button):
-            button.setEnabled(not busy)
+        self.progress.setVisible(busy)
         self.progress.setRange(0, 0 if busy else 100)
         if not busy:
             self.progress.setValue(0)
@@ -1774,21 +1817,47 @@ class MainWindow(QMainWindow):
             else:
                 self._export_excel("meh-teljes-adatallomany.xlsx", write_dataset_excel, *tables)
         else:
-            if kind == "raw":
-                frame = self.get_filtered_raw()
-            elif kind == "source":
-                frame = self.source_df
-                companies = self.current_filters().companies
-                if companies and not frame.empty:
-                    frame = frame[frame["CEGNEV"].isin(companies)]
-            elif kind == "missing":
-                frame = self.missing_df
-            else:
-                raise ValueError("Ismeretlen export.")
-            self._export_file(
-                f"meh-{kind}.csv", "CSV (*.csv)",
-                lambda path, data: Path(path).write_bytes(csv_bytes(data)), frame.copy(),
+            raise ValueError("Ismeretlen export.")
+
+    def export_configured(self):
+        if self._is_busy():
+            QMessageBox.warning(self, "Folyamatban", "Várd meg a folyamatban lévő műveletet.")
+            return
+        if self.source_df.empty and self.raw_df.empty and self.missing_df.empty:
+            QMessageBox.warning(self, "Nincs adat", "Nincs exportálható adatállomány.")
+            return
+        try:
+            counties = available_counties(self.source_df, self.raw_df, self.missing_df)
+        except ValueError as error:
+            QMessageBox.critical(self, "Megyeadatok hibája", str(error))
+            return
+        description = self.filter_description()
+        dialog = ExcelExportDialog(counties, description, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        options = dialog.options()
+        if options.separate_counties:
+            path = QFileDialog.getExistingDirectory(self, "Excel-fájlok célmappája", str(OUTPUT_DIR))
+        else:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Excel mentése", str(OUTPUT_DIR / "meh-egyedi.xlsx"), "Excel (*.xlsx)",
             )
+            if path and not path.lower().endswith(".xlsx"):
+                path += ".xlsx"
+        if not path:
+            return
+        source, raw, missing, master = (
+            self.source_df.copy(), self.raw_df.copy(), self.missing_df.copy(), self.agg.master.copy(),
+        )
+        filters = self.current_filters()
+        groups = self.category_service.all_groups()
+        self._run_task(
+            "Excel készítése a háttérben…",
+            lambda: export_configured_excel(
+                path, source, raw, missing, master, options, filters, groups, description,
+            ),
+            self._export_done,
+        )
 
     def _export_done(self, path):
         self.set_status(f"Export elkészült: {path}", 100, 100)

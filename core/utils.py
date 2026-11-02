@@ -107,7 +107,7 @@ def split_address_parts(sz: Any):
     s = normalize_whitespace(safe_str(sz))
     if not s:
         return {
-            "Vármegye": "",
+            "Megye": "",
             "IRSZ": "",
             "Település": "",
             "Cím": "",
@@ -115,14 +115,14 @@ def split_address_parts(sz: Any):
 
     parts = [p.strip() for p in s.split(",") if p.strip()]
     out = {
-        "Vármegye": "",
+        "Megye": "",
         "IRSZ": "",
         "Település": "",
         "Cím": "",
     }
 
     if len(parts) > 0:
-        out["Vármegye"] = parts[0]
+        out["Megye"] = parts[0]
     if len(parts) > 1:
         out["IRSZ"] = parts[1]
     if len(parts) > 2:

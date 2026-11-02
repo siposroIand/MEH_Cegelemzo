@@ -22,7 +22,7 @@ Linuxon a Qt rendszerfüggőségei is szükségesek; Ubuntu alatt például
 
 ## Használat
 
-1. **Excel betöltése:** válassz `.xlsx` forrást és lekérdezési típust.
+1. **Importálás → Excel betöltése** (`Ctrl+O`): válassz `.xlsx` forrást és lekérdezési típust.
    A forrásimport, az OKIR-lekérés, az aggregálás és az automatikus helyi
    mentés háttérben fut. Sikertelen betöltés nem cseréli le az aktív adatokat.
 2. **Szűrés:** cég, év, termékcsoport, adattípus és HAK szerint. Több érték
@@ -30,16 +30,52 @@ Linuxon a Qt rendszerfüggőségei is szükségesek; Ubuntu alatt például
    is keres, több kód `;`-vel választható el. A grafikonokra kattintva is
    szűrhetsz. Betöltéskor a legutóbbi két adatév aktív; a **Szűrők törlése**
    minden évet visszahoz.
-3. **Cég × Év / HAK mátrix:** a felső kiemelt gomb vagy az **Exportálás**
-   menü elkészíti az aktuális szűrés szerinti Excel-kimutatást.
+3. **Exportálás → Excel készítése** (`Ctrl+Shift+E`): válaszd ki a mentendő
+   munkalapokat és a megyebontást. A korábbi kimutatások az
+   **Exportálás → Gyors Excel-kimutatások** almenüben érhetők el.
 
 A világos, egységes felületen külön áttekintés, adattáblák, KTJ-nézet és
-hibajegyzék található. A táblázatok a látható cellákat modellből jelenítik
+hibajegyzék található. A fejléc csak a címet tartalmazza; az importálás,
+a korábbi mentések és a mátrix a menüből érhetők el. Keskenyebb ablakban
+a mutatók több sorba, a grafikonok egy oszlopba rendeződnek; az oldalsáv
+görgethető, a műveletjelző az alsó állapotsorban látható.
+A táblázatok a látható cellákat modellből jelenítik
 meg; a szűrőgépelés késleltetett, a nézetek csak megnyitáskor frissülnek.
+A szűrőlisták betöltése egyetlen összefoglaló-frissítéssel történik,
+nem cégenként újra bejárva a teljes listát.
 A hosszabb Excel-exportok, mentésbetöltések és KTJ-lekérések háttérben
 futnak. Egyszerre egy ilyen művelet indulhat; bezárás előtt az alkalmazás
 megváratja a befejezést. Az export idején a szűrők tovább használhatók,
 de a fájl az export indításakor kijelölt adatokat tartalmazza.
+
+### Paraméterezhető Excel-export
+
+Az **Exportálás → Excel készítése** ablakban külön kijelölhető a
+Cég × Év / HAK mátrix, a termékcsoportos összesítő, a részletes HAK-lista,
+a forráscégek, a nyers adatok és a kimaradt lekérések munkalapja.
+Legalább egy munkalapot ki kell választani. Az **Export beállításai**
+munkalap dokumentálja az adatkört; mátrix esetén a **Szűrés** lap is megmarad.
+
+Alapértelmezésben a főablak aktuális szűrése érvényesül; kikapcsolva a
+teljes adatállományból készül a kiválasztott tartalom. A megyék külön
+kijelölhetők; üres megyekijelölés minden megyét jelent. A forráscégekre és
+a hibalistára csak a cég- és megyeszűrés vonatkozik, az év-, HAK-,
+adattípus- és termékcsoport-szűrés csak a hulladékadatokra.
+
+A **Megyénként külön Excel-fájl** opció a választott célmappában új,
+egyedi nevű `meh-excel-…` almappát hoz létre, benne megyénként egy `.xlsx`
+fájllal. A besorolás a **forráscég székhelye** alapján, cégnév és KÜJ
+együttes azonosításával történik, nem a KTJ telephelyének megyéje alapján.
+A hiányzó című vagy forráscéghez nem kapcsolható sorok **Ismeretlen megye**
+néven maradnak meg. Ellentmondó megyeadat esetén az export hibát jelez.
+Csak a kiválasztott munkalapokon adattal rendelkező megyékhez készül fájl.
+Ha egy ilyen megye mátrixához nincs hulladékadat, azon külön tájékoztatás
+szerepel; a kiválasztott forrás- és hibasorok ettől még mentésre kerülnek.
+
+A mentés háttérben fut. A teljes megyei sorozat csak minden fájl sikeres
+elkészülése után válik elérhetővé; hiba esetén nem marad félkész exportmappa,
+és korábbi exportok nem íródnak felül. Egyetlen Excel-fájl mentésekor is
+csak sikeres írás váltja fel a meglévő fájlt.
 
 ### Új Cég–Év–HAK Excel-mátrix
 
@@ -84,26 +120,27 @@ A vezetői riport HTML-ként menthető; böngészőből nyomtatással PDF-be men
 
 ### Megosztható PKG és további adatexportok
 
-Az **Exportálás** menüben, illetve a webes **Megosztható csomag és
-adatexportok** szakaszban az alábbi lehetőségek is elérhetők:
+Az asztali **Exportálás** menü külön **Gyors Excel-kimutatások**,
+**Riportok**, illetve **Mentés és megosztás** almenükre tagolódik.
+CSV-export nincs az asztali menüben. Az alábbi mentések az opcionális
+webes felületen is elérhetők:
 
 | Export | Tartalom és szűrés |
 |---|---|
 | Megosztható `.okirpkg` | Teljes forrás-, nyers- és hibatábla, a rendelkezésre álló KTJ-metaadatok; asztali exportnál az aktuális szűrők és nézet is |
 | MÉH `.json` | Teljes forrás-, nyers- és hibatábla; visszaimportálható, KTJ-metaadatok és nézetbeállítások nélkül |
 | Teljes adatállomány `.xlsx` | Három munkalap: Forráscégek, Nyers adatok (kg), Kimaradt lekérések; szűréstől függetlenül |
-| Nyers adatok `.csv` | Minden nyers sor, amely megfelel az aktuális cég-, év-, termékcsoport-, HAK- és adattípus-szűrésnek |
-| Forráscégek `.csv` | A cégszűrésnek megfelelő forrásadatok; a többi szűrő nem vonatkozik rájuk |
-| Kimaradt lekérések `.csv` | A teljes munkamenet hibalistája |
 
 A PKG, JSON és teljes Excel **a szűrőkkel elrejtett adatokat is tartalmazza**;
 megosztás előtt ezt vedd figyelembe. A PKG nem titkosított.
-A CSV UTF-8 BOM-os, pontosvesszős, tizedesvesszős fájl, a mennyiségek kg-ban
-maradnak. A képletnek értelmezhető szövegek elé védő aposztróf kerül.
-Az azonosítókat CSV megnyitásakor szövegoszlopként importáld Excelbe, hogy
-a kezdő nullák megmaradjanak. A JSON/PKG és az új teljes Excel ezeket
+A JSON/PKG és a teljes Excel az azonosítókat
 szövegként őrzi meg. A teljes Excel adatexport, nem forrásimport-sablon;
 visszatöltéshez a PKG-t vagy a MÉH JSON-t használd.
+Az opcionális webes változat korábbi CSV-exportjai és API-ja változatlanok:
+a nyers adatok az aktuális szűrést, a forráscégek a cégszűrést követik,
+a hibalista teljes. Ezek UTF-8 BOM-os, pontosvesszős, tizedesvesszős fájlok,
+kg-mennyiségekkel és képletvédett szövegekkel. Az azonosítókat CSV-ből
+szövegoszlopként kell importálni a kezdő nullák megőrzéséhez.
 
 Az **Importálás → Megosztható PKG betöltése** megnyitja az új és a régi
 `.okirpkg` csomagokat is (`.pkg` és `.zip` kiterjesztés is választható).
@@ -135,8 +172,10 @@ eredmény is mentődik; a hiányokat a **Kimaradt** nézet mutatja.
 
 A meglévő `data/okir_cache.db` sémája változatlan. Az asztali alkalmazás
 automatikusan visszatölti az utoljára aktív asztali mentést; ennek hiányában
-az aktív webes, majd a legújabb mentést. Az **Exportálás → Helyi mentés**
-elnevezett mentést készít, a **Korábbi mentés** gomb a régebbieket nyitja meg.
+az aktív webes, majd a legújabb mentést. Az
+**Exportálás → Mentés és megosztás → Helyi mentés készítése**
+elnevezett mentést készít, az **Importálás → Korábbi helyi mentés betöltése**
+a régebbieket nyitja meg.
 A korábbi és új MÉH JSON mentések egyaránt betölthetők. Másik gépre
 átvihető, visszatölthető mentéshez az új megosztható PKG ajánlott.
 

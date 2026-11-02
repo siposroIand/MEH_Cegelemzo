@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -26,6 +27,7 @@ from matplotlib.figure import Figure
 from core.constants import DEFAULT_QUERY_TYPE_LABEL
 from core.logger import logger
 from core.utils import format_hu_number, format_quantity_auto_unit
+from services.configurable_export_service import EXCEL_SECTIONS, ExcelExportOptions
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,6 +76,15 @@ class MultiSelectComboBox(QComboBox):
         item.setData(Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole)
         item.setData(user_data if user_data is not None else text, Qt.UserRole)
         self._model.appendRow(item)
+        self._update_summary()
+
+    def add_check_items(self, items):
+        for text, value in items:
+            item = QStandardItem(text)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            item.setData(Qt.Unchecked, Qt.CheckStateRole)
+            item.setData(value, Qt.UserRole)
+            self._model.appendRow(item)
         self._update_summary()
 
     def checked_values(self) -> List[Any]:
@@ -131,6 +142,75 @@ class MultiSelectComboBox(QComboBox):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+class ExcelExportDialog(QDialog):
+    def __init__(self, counties, description, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Excel készítése")
+        self.resize(560, 600)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        title = QLabel("Mit tartalmazzon az Excel?")
+        title.setObjectName("appTitle")
+        layout.addWidget(title)
+        group = QGroupBox("Munkalapok")
+        sheets = QVBoxLayout(group)
+        self.section_checks = {}
+        for key, label in EXCEL_SECTIONS.items():
+            check = QCheckBox(label)
+            check.setChecked(key == "matrix")
+            check.toggled.connect(self._update_validity)
+            sheets.addWidget(check)
+            self.section_checks[key] = check
+        layout.addWidget(group)
+        self.use_filters = QCheckBox("A főablak aktuális szűrésének használata")
+        self.use_filters.setChecked(True)
+        layout.addWidget(self.use_filters)
+        scope = QLabel(description)
+        scope.setWordWrap(True)
+        scope.setObjectName("mutedLabel")
+        layout.addWidget(scope)
+        form = QFormLayout()
+        self.counties = MultiSelectComboBox("Összes megye")
+        self.counties.add_check_items((county, county) for county in counties)
+        form.addRow("Megyék", self.counties)
+        layout.addLayout(form)
+        self.separate_counties = QCheckBox("Megyénként külön Excel-fájl")
+        layout.addWidget(self.separate_counties)
+        note = QLabel(
+            "A megye a cég székhelye alapján kerül meghatározásra. A nem azonosítható "
+            "sorok az Ismeretlen megye csoportba kerülnek.\n"
+            "A forráscégekre és hibákra csak a cég- és megyeszűrés vonatkozik.\n"
+            "Külön fájloknál a kiválasztott célmappában új exportmappa készül; "
+            "korábbi fájlokat nem írunk felül."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("mutedLabel")
+        layout.addWidget(note)
+        layout.addStretch()
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Save).setText("Excel készítése")
+        self.buttons.button(QDialogButtonBox.Save).setObjectName("primaryButton")
+        self.buttons.button(QDialogButtonBox.Cancel).setText("Mégse")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self._update_validity()
+
+    def _update_validity(self):
+        if hasattr(self, "buttons"):
+            self.buttons.button(QDialogButtonBox.Save).setEnabled(
+                any(check.isChecked() for check in self.section_checks.values())
+            )
+
+    def options(self):
+        return ExcelExportOptions(
+            sections=tuple(key for key, check in self.section_checks.items() if check.isChecked()),
+            use_filters=self.use_filters.isChecked(),
+            counties=tuple(self.counties.checked_values()),
+            separate_counties=self.separate_counties.isChecked(),
+        )
+
+
 class FileDropWidget(QFrame):
     fileDropped = Signal(str)
 
