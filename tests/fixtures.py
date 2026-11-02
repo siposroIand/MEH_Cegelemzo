@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 
 from services.aggregation_service import normalize_records
@@ -22,3 +24,12 @@ def dataset(count=120):
         }], company["CEGNEV"], company["KUJ"], "HULL_ATADAS"))
     missing = pd.DataFrame([{"Cég": "Kimaradt cég", "KÜJ": "009999999", "Adattípus": "Átadás", "Ok": "Teszt: nincs adat"}])
     return source, pd.DataFrame(rows), missing
+
+
+def legacy_dataset_bytes(source, raw, missing):
+    return json.dumps({
+        "format": "meh-cegelemzo", "version": 1, "quantity_unit": "kg",
+        "source": json.loads(source.to_json(orient="records")),
+        "raw": json.loads(raw.to_json(orient="records")),
+        "missing": json.loads(missing.to_json(orient="records")),
+    }, ensure_ascii=False).encode("utf-8")

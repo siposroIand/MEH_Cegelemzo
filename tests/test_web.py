@@ -1,5 +1,4 @@
 import io
-import json
 from pathlib import Path
 import tempfile
 import threading
@@ -11,8 +10,7 @@ from urllib.parse import urlencode
 import pandas as pd
 from openpyxl import load_workbook
 
-from services.report_service import dataset_bytes, read_dataset
-from tests.fixtures import dataset
+from tests.fixtures import dataset, legacy_dataset_bytes
 from web.app import create_app
 
 
@@ -46,7 +44,7 @@ class WebTests(unittest.TestCase):
 
     def upload(self, payload=None):
         response = self.client.post("/api/import", headers={"X-CSRF-Token": self.csrf},
-                                    data={"file": (io.BytesIO(payload or dataset_bytes(self.source, self.raw, self.missing)), "minta.json")})
+                                    data={"file": (io.BytesIO(payload or legacy_dataset_bytes(self.source, self.raw, self.missing)), "minta.json")})
         self.assertEqual(response.status_code, 202)
         return self.wait()
 
@@ -74,23 +72,32 @@ class WebTests(unittest.TestCase):
         view = self.client.get("/api/view?" + query).json
         expected = self.raw[(self.raw.EV == 2025) & (self.raw.CEGNEV == "Minta Fém Kft.")]
         self.assertEqual(view["summary"]["quantity_kg"], expected.MENNYISEG.sum())
-        exported = self.client.get("/api/export/json?" + query)
-        restored = read_dataset(exported.data)
-        self.assertEqual(len(restored[1]), len(expected))
-        self.assertEqual(len(restored[0]), 1)
+        response = self.client.get("/api/export/matrix?" + query)
+        self.assertEqual(response.status_code, 200, response.data[:100])
+        self.assertIn("meh-ceg-hak-matrix.xlsx", response.headers["Content-Disposition"])
+        book = load_workbook(io.BytesIO(response.data))
+        matrix = list(book["Cég–HAK mátrix"].values)
+        self.assertEqual(matrix[0], ("Cég", "170405"))
+        self.assertEqual(matrix[1], ("Mennyiség (t)", "Vas és acél"))
+        self.assertEqual(matrix[2][0], "Minta Fém Kft.")
+        self.assertAlmostEqual(matrix[2][1], expected.MENNYISEG.sum() / 1000)
+        self.assertIn("Év: 2025", book["Szűrés"]["B2"].value)
         for kind in ("summary", "detail", "ktj"):
             response = self.client.get(f"/api/export/{kind}?{query}")
             self.assertEqual(response.status_code, 200, response.data[:200])
             self.assertIn("attachment", response.headers["Content-Disposition"])
             self.assertTrue(load_workbook(io.BytesIO(response.data)).sheetnames)
-        csv = self.client.get("/api/export/csv?" + query)
-        self.assertTrue(csv.data.startswith(b"\xef\xbb\xbf"))
-        errors = self.client.get("/api/export/missing?" + query)
-        self.assertIn("Kimaradt cég", errors.data.decode("utf-8-sig"))
+        errors = self.client.get("/api/export/errors?" + query)
+        self.assertEqual(load_workbook(io.BytesIO(errors.data)).worksheets[0]["A2"].value, "Kimaradt cég")
         report = self.client.get("/api/export/report?" + query)
         self.assertIn("Minta Fém Kft.", report.text)
-        backup = read_dataset(self.client.get("/api/export/backup?" + query).data)
-        self.assertEqual(len(backup[1]), 120)
+        for removed in ("csv", "json", "backup", "missing"):
+            self.assertEqual(self.client.get(f"/api/export/{removed}").status_code, 404)
+        self.assertEqual(self.client.get("/api/export/matrix?years=1900").status_code, 400)
+        html = self.client.get("/").text
+        for removed in ("csv", "json", "backup", "missing"):
+            self.assertNotIn(f'data-export="{removed}"', html)
+        self.assertIn('data-export="matrix"', html)
 
     def test_invalid_upload_keeps_current_data(self):
         self.login()

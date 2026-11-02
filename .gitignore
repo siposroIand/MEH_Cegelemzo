@@ -7,3 +7,5 @@ output/
 .venv/
 .env
 .pytest_cache/
+dist/
+build/

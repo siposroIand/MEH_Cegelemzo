@@ -41,6 +41,10 @@ function updateExports() {
   document.querySelectorAll("[data-export]").forEach((link) => {
     link.href = `/api/export/${link.dataset.export}?${query}`;
   });
+  const selected = ["companies", "years", "categories", "types"].map((id) =>
+    Array.from($(id).selectedOptions, (option) => option.textContent).join(", ")).filter(Boolean);
+  if ($("code").value.trim()) selected.push(`HAK: ${$("code").value.trim()}`);
+  $("selection-summary").textContent = `Aktuális szűrés: ${selected.join(" · ") || "összes adat"}`;
 }
 function options(id, values, names = {}) {
   const selected = new Set(Array.from($(id).selectedOptions, (option) => option.value));
@@ -70,6 +74,7 @@ async function refreshState(reset = false) {
   if (state.snapshots.some((row) => String(row[0]) === previous)) $("snapshots").value = previous;
   displayJob(state.job);
   if (!state.rows) $("import-panel").open = true;
+  else if (reset && state.job.status === "done") $("import-panel").open = false;
   return state;
 }
 function displayJob(job) {
@@ -107,6 +112,7 @@ function renderSummary(data) {
   $("kpi-companies").textContent = number.format(data.companies);
   $("kpi-codes").textContent = number.format(data.codes);
   $("kpi-danger").textContent = `${number.format(data.dangerous_percent)}%`;
+  document.querySelector('[data-export="matrix"]').setAttribute("aria-disabled", String(data.companies === 0));
   chart("yearly", data.yearly, "EV", "years");
   chart("category-chart", data.categories, "PRODUCT_GROUP", "categories");
   chart("company-chart", data.company_totals, "CEGNEV", "companies");
@@ -204,6 +210,16 @@ $("import-form").addEventListener("submit", (event) => {
   data.set("force_refresh", String(event.currentTarget.elements.force_refresh.checked));
   mutate("/api/import", {body: data}, true).catch(showError);
 });
+$("legacy-import").addEventListener("submit", (event) => {
+  event.preventDefault();
+  mutate("/api/import", {body: new FormData(event.currentTarget)}, true).catch(showError);
+});
+document.querySelector('[data-export="matrix"]').addEventListener("click", (event) => {
+  if (event.currentTarget.getAttribute("aria-disabled") === "true") {
+    event.preventDefault();
+    showError(new Error("Nincs a szűrésnek megfelelő adat. Tölts be adatokat vagy módosítsd a szűrést."));
+  }
+});
 handle("previous", () => {page = Math.max(1, page - 1); return refreshView();});
 handle("next", () => {page += 1; return refreshView();});
 handle("load-ktj", () => mutate(`/api/ktj?${params()}`));
@@ -230,7 +246,7 @@ window.addEventListener("online", () => {
   poll().catch(showError);
 });
 async function start() {
-  if (window.matchMedia("(max-width: 760px)").matches) document.querySelector(".sidebar details").open = false;
+  if (window.matchMedia("(max-width: 760px)").matches) $("filter-panel").open = false;
   await refreshState();
   await refreshView();
   if (running) await poll();

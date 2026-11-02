@@ -11,13 +11,13 @@ from openpyxl import load_workbook
 from services.aggregation_service import aggregate_data, normalize_records
 from services.cache_db import CacheDB
 from services.category_service import CategoryService
-from services.export_service import build_detail_export, build_summary_export, write_detail_excel
+from services.export_service import build_detail_export, build_summary_export, write_detail_excel, write_hak_matrix_excel
 from services.fetch_service import fetch_data
 from services.filter_service import Filters, filter_frame
 from services.import_service import build_source_from_excel_by_adoszam
 from services.persistence_service import PersistenceService
-from services.report_service import csv_bytes, dataset_bytes, read_dataset, report_html, summary
-from tests.fixtures import dataset
+from services.report_service import read_dataset, report_html, summary
+from tests.fixtures import dataset, legacy_dataset_bytes
 
 
 class ServiceTests(unittest.TestCase):
@@ -56,13 +56,8 @@ class ServiceTests(unittest.TestCase):
         totals = build_summary_export(master, self.source, self.categories.all_groups())
         self.assertAlmostEqual(totals["Össz hulladék (tonna)"].sum(), .2)
 
-    def test_csv_excel_and_html_escape_untrusted_text(self):
+    def test_excel_and_html_escape_untrusted_text(self):
         text = '=HYPERLINK("https://example.invalid")'
-        frame = pd.DataFrame({"Szöveg": [text, "Árvíztűrő", "@SUM(1)", "\tformula"], "kg": [1, 2, -3, 0]})
-        csv = csv_bytes(frame).decode("utf-8-sig")
-        self.assertIn("'=HYPERLINK", csv)
-        self.assertIn("'@SUM", csv)
-        self.assertIn(";-3", csv)
         raw = self.raw.copy()
         raw["CEGNEV"] = text
         master = aggregate_data(raw, pd.DataFrame(), self.categories).master
@@ -77,23 +72,79 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", report)
         self.assertIn("PDF", report)
 
-    def test_json_roundtrip_and_validation(self):
-        restored = read_dataset(dataset_bytes(self.source, self.raw, self.missing))
+    def test_legacy_json_import_and_validation(self):
+        restored = read_dataset(legacy_dataset_bytes(self.source, self.raw, self.missing))
         self.assertEqual(restored[1].SOURCE_KUJ.iloc[0], "001234567")
         self.assertEqual(restored[1].MENNYISEG.sum(), self.raw.MENNYISEG.sum())
         for changes in ({"format": "pickle"}, {"quantity_unit": "t"}, {"raw": [{"foo": []}]}):
-            payload = json.loads(dataset_bytes(self.source, self.raw, self.missing))
+            payload = json.loads(legacy_dataset_bytes(self.source, self.raw, self.missing))
             payload.update(changes)
             with self.assertRaises(ValueError):
                 read_dataset(json.dumps(payload))
-            raw_with_nulls = self.raw.copy()
-            raw_with_nulls.loc[0, ["EV", "MENNYISEG"]] = None
-            restored = read_dataset(dataset_bytes(self.source, raw_with_nulls, self.missing))
-            self.assertTrue(pd.isna(restored[1].loc[0, "EV"]))
-        payload = json.loads(dataset_bytes(self.source, self.raw, self.missing))
+        raw_with_nulls = self.raw.copy()
+        raw_with_nulls.loc[0, ["EV", "MENNYISEG"]] = None
+        restored = read_dataset(legacy_dataset_bytes(self.source, raw_with_nulls, self.missing))
+        self.assertTrue(pd.isna(restored[1].loc[0, "EV"]))
+        payload = json.loads(legacy_dataset_bytes(self.source, self.raw, self.missing))
         payload["raw"][0]["EV"] = 2025.5
         with self.assertRaises(ValueError):
             read_dataset(json.dumps(payload))
+
+    def test_hak_matrix_shape_units_and_overlaps(self):
+        rows = []
+        for company, kuj, year, code, name, kind, quantity in (
+            ("Alpha", "001", 2024, "001001", "Első", "HULL_ATADAS", 125),
+            ("Alpha", "001", 2025, "001001", "Első", "HULL_ATADAS", 75),
+            ("Alpha", "002", 2025, "001001", "Másik", "HULL_ATVETEL", 200),
+            ("Alpha", "001", 2025, "170405", "Vas", "HULL_ATADAS", .125),
+            ("Beta", "003", 2025, "170405", "Vas", "HULL_ATADAS", 1000),
+            ("Beta", "003", 2025, "999999", None, "HULL_ATADAS", -25),
+        ):
+            rows.extend(normalize_records([{"EV": year, "HULLADEKKOD": code, "HULLADEK_MEGNEVEZES": name,
+                                            "MENNYISEG": quantity}], company, kuj, kind))
+        master = aggregate_data(pd.DataFrame(rows), pd.DataFrame(), self.categories).master
+        buffer = io.BytesIO()
+        write_hak_matrix_excel(buffer, master, "Minden év és adattípus")
+        workbook = load_workbook(buffer)
+        sheet = workbook["Cég–HAK mátrix"]
+        self.assertEqual(list(sheet.values), [
+            ("Cég", "001001", "170405", "999999"),
+            ("Mennyiség (t)", "Első; Másik", "Vas", "Nincs megnevezés"),
+            ("Alpha", .4, .000125, 0),
+            ("Beta", 0, 1, -.025),
+        ])
+        self.assertEqual(sheet.freeze_panes, "B3")
+        self.assertEqual(sheet["B1"].data_type, "s")
+        self.assertEqual(sheet["B3"].data_type, "n")
+        self.assertEqual(sheet["B3"].number_format, "#,##0.000")
+        self.assertEqual(workbook["Szűrés"]["B2"].value, "Minden év és adattípus")
+        self.assertAlmostEqual(sum(sum(row[1:]) for row in list(sheet.values)[2:]) * 1000,
+                               summary(master)["quantity_kg"])
+
+        selected = Filters(years=(2025,), categories=("Fém",), types=("HULL_ATADAS",), code="1704")
+        buffer = io.BytesIO()
+        write_hak_matrix_excel(buffer, filter_frame(master, selected))
+        self.assertEqual(list(load_workbook(buffer).worksheets[0].values), [
+            ("Cég", "170405"), ("Mennyiség (t)", "Vas"), ("Alpha", .000125), ("Beta", 1),
+        ])
+
+    def test_hak_matrix_rejects_empty_or_oversized_and_writes_literal_text(self):
+        with self.assertRaisesRegex(ValueError, "Nincs"):
+            write_hak_matrix_excel(io.BytesIO(), pd.DataFrame())
+        too_wide = pd.DataFrame({"CEGNEV": ["A"] * 16384, "HULLADEKKOD": [str(i) for i in range(16384)]})
+        with self.assertRaisesRegex(ValueError, "mérethatár"):
+            write_hak_matrix_excel(io.BytesIO(), too_wide)
+        raw = self.raw.copy()
+        raw["CEGNEV"] = "=1+1"
+        raw["HULLADEK_MEGNEVEZES"] = "=2+2"
+        master = aggregate_data(raw, pd.DataFrame(), self.categories).master
+        buffer = io.BytesIO()
+        write_hak_matrix_excel(buffer, master, "=3+3")
+        workbook = load_workbook(buffer)
+        for sheet in workbook:
+            for row in sheet:
+                self.assertTrue(all(cell.data_type != "f" for cell in row))
+        self.assertEqual(workbook.worksheets[0]["A3"].value, "=1+1")
 
     def test_snapshot_roundtrip_and_index(self):
         persistence = PersistenceService(Path(self.temp.name) / "db.sqlite")

@@ -1,4 +1,4 @@
-"""Rebuild PWA icons with Pillow (included with desktop matplotlib)."""
+"""Rebuild PWA icons with Pillow from requirements-test.txt."""
 from pathlib import Path
 
 from PIL import Image, ImageDraw

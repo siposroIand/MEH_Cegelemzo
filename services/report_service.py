@@ -1,7 +1,7 @@
 import html
 import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pandas as pd
 
@@ -20,25 +20,8 @@ def records(frame):
     return json.loads(frame.to_json(orient="records", force_ascii=False))
 
 
-def csv_bytes(frame):
-    def safe_cell(value):
-        if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
-            return "'" + value
-        return value
-
-    safe = frame.map(safe_cell)
-    return safe.to_csv(index=False, sep=";", lineterminator="\r\n").encode("utf-8-sig")
-
-
-def dataset_bytes(source, raw, missing):
-    return json.dumps({
-        "format": FORMAT, "version": 1, "quantity_unit": "kg",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": records(source), "raw": records(raw), "missing": records(missing),
-    }, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
-
-
 def read_dataset(data):
+    """Read legacy backups only; JSON is no longer an export format."""
     payload = json.loads(data)
     if not isinstance(payload, dict) or payload.get("format") != FORMAT or payload.get("version") != 1:
         raise ValueError("Nem támogatott MÉH JSON formátum vagy verzió.")

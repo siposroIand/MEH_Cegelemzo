@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  services-and-desktop:
+  web-and-services:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,10 +15,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt -r requirements-web.txt
+      - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
-        env:
-          QT_QPA_PLATFORM: offscreen
       - run: python -m tools.benchmark
   browsers:
     runs-on: ubuntu-latest

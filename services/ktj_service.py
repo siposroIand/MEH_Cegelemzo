@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict
 import pandas as pd
 
 from core.utils import clean_int_like
@@ -55,8 +55,3 @@ class KtjService:
         out["Megye"]          = out["KTJ"].apply(lambda x: meta_value(x, "MEGYE_NEV"))
         out["Régió"]          = out["KTJ"].apply(lambda x: meta_value(x, "REGIO_NEV"))
         return out
-
-    def load_external_cache(self, data: dict) -> None:
-        """Megosztott csomag betöltésekor az elmentett cache visszatöltéséhez."""
-        if isinstance(data, dict):
-            self.cache.update(data)
