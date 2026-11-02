@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block body %}
+<main class="login card">
+  <span class="eyebrow">MÉH ZRT. / CÉGELEMZŐ</span>
+  <h1>Tisztább kép.<br>Jobb döntések.</h1>
+  <p>Hulladékadatok, cégprofilok és kimutatások egy helyen.</p>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <label for="password">Munkaterület jelszava</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    {% if error %}<p role="alert" class="error">{{ error }}</p>{% endif %}
+    <button type="submit" class="primary">Belépés</button>
+  </form>
+  <p class="muted">iPhone / iPad: Safari → Megosztás → Főképernyőhöz adás.<br>
+  Használatához internetkapcsolat és elérhető szerver szükséges.</p>
+</main>
+{% endblock %}

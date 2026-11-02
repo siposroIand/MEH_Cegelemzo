@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block head %}<script src="/static/app.js" defer></script>{% endblock %}
+{% block body %}
+<a href="#content" class="skip">Ugrás a tartalomra</a>
+<header class="topbar">
+  <a class="brand" href="/" aria-label="MÉH Cégelemző kezdőlap"><span class="mark">M</span><span>MÉH <b>Cégelemző</b></span></a>
+  <div class="top-actions"><span id="connection" class="pill">Online</span><button id="logout" class="quiet">Kilépés</button></div>
+</header>
+<main class="shell">
+  <section class="heading">
+    <div><span class="eyebrow">ADATBÓL ÁTTEKINTÉS</span><h1>Cégprofil és hulladékelemzés</h1>
+      <p class="muted" id="filename">Tölts be egy forrásfájlt vagy egy korábbi mentést.</p></div>
+    <a class="button primary" href="#import-panel">Adatok importálása</a>
+  </section>
+  <div id="error" role="alert" class="error" hidden></div>
+  <section class="status card" aria-label="Művelet állapota">
+    <p id="status" role="status" aria-live="polite">Betöltés...</p>
+    <progress id="progress" max="1" value="0" aria-label="Feldolgozás"></progress>
+  </section>
+  <div class="workspace">
+    <aside class="sidebar">
+      <details class="card" open>
+        <summary>Szűrők <span class="muted">/ aktuális nézet</span></summary>
+        <form id="filters">
+          <label for="companies">Cégek</label><select id="companies" name="companies" multiple aria-describedby="multi-help"></select>
+          <label for="years">Évek</label><select id="years" name="years" multiple></select>
+          <label for="categories">Termékcsoportok</label><select id="categories" name="categories" multiple></select>
+          <label for="types">Adattípusok</label><select id="types" name="types" multiple></select>
+          <p id="multi-help" class="muted small">Több érték is választható. Üres kijelölés: összes. Induláskor a legutóbbi két év aktív.</p>
+          <label for="code">HAK kód</label><input id="code" name="code" placeholder="pl. 1704;1501" maxlength="500" inputmode="text">
+          <button type="button" id="reset">Összes adat / szűrők törlése</button>
+        </form>
+      </details>
+      <details class="card" id="import-panel">
+        <summary>Importálás</summary>
+        <form id="import-form">
+          <label for="file">Excel (.xlsx) vagy MÉH JSON</label>
+          <input id="file" name="file" type="file" accept=".xlsx,.json,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
+          <p class="muted small">Maximum 20 MB és 2000 forráscég / Excel. Az import lecseréli az aktív adatokat; a korábbi mentések megmaradnak.</p>
+          <fieldset><legend>Lekérendő adattípusok (Excel)</legend>
+            <label class="check"><input type="checkbox" name="types" value="HULL_KELETKEZES"> Keletkezés</label>
+            <label class="check"><input type="checkbox" name="types" value="HULL_ATVETEL"> Átvétel</label>
+            <label class="check"><input type="checkbox" name="types" value="HULL_ATADAS" checked> Átadás</label>
+          </fieldset>
+          <label class="check"><input name="use_cache" type="checkbox" checked> Gyorsítótár használata</label>
+          <label class="check"><input name="force_refresh" type="checkbox"> Friss lekérés az OKIR-ból</label>
+          <button type="submit" class="primary mutation">Import indítása</button>
+        </form>
+      </details>
+      <details class="card">
+        <summary>Mentések és beállítások</summary>
+        <p class="muted small">Közös, jelszóval védett munkaterület. Minden sikeres import automatikusan mentésre kerül a szerveren.</p>
+        <label for="note">Mentés neve</label><input id="note" maxlength="200" placeholder="pl. Negyedéves elemzés">
+        <button id="save" class="mutation">Aktuális adatok mentése</button>
+        <label for="snapshots">Korábbi mentések</label><select id="snapshots"></select>
+        <div class="actions"><button id="load" class="mutation">Betöltés</button><button id="delete" class="mutation danger">Törlés</button></div>
+        <button id="clear-cache" class="mutation quiet">OKIR gyorsítótár törlése</button>
+        <p class="muted small">iOS telepítés: Safari → Megosztás → Főképernyőhöz adás. Offline csak a tájékoztató érhető el.</p>
+      </details>
+    </aside>
+    <div class="content" id="content" tabindex="-1">
+      <div class="kpis" aria-label="Fő mutatók">
+        <article class="card"><span>Összes mennyiség</span><strong id="kpi-quantity">—</strong><small>tonna</small></article>
+        <article class="card"><span>Vizsgált cégek</span><strong id="kpi-companies">—</strong><small>egyedi cégnév</small></article>
+        <article class="card"><span>HAK kódok</span><strong id="kpi-codes">—</strong><small>egyedi kód</small></article>
+        <article class="card"><span>Veszélyes hulladék</span><strong id="kpi-danger">—</strong><small>mennyiségi arány</small></article>
+      </div>
+      <nav class="tabs" aria-label="Adatnézetek">
+        <button data-view="dashboard" aria-pressed="true">Áttekintés</button>
+        <button data-view="master" aria-pressed="false">Részletes adatok</button>
+        <button data-view="ktj" aria-pressed="false">Telephelyek / KTJ</button>
+        <button data-view="source" aria-pressed="false">Cégadatok</button>
+        <button data-view="missing" aria-pressed="false">Kimaradt / hibák</button>
+      </nav>
+      <section id="empty" class="card empty" hidden><h2>Még nincs megjeleníthető adat</h2>
+        <p>Tölts be egy Excel-forrásfájlt, MÉH JSON-t vagy korábbi mentést. Ha már van adat, módosítsd a szűrőket.</p></section>
+      <section id="dashboard" class="charts">
+        <article class="card"><h2>Éves mennyiségek</h2><p class="muted small">Tonna / kattints egy évre a szűréshez</p><div id="yearly"></div></article>
+        <article class="card"><h2>Termékcsoportok</h2><p class="muted small">Tonna / a csoportok átfedhetnek</p><div id="category-chart"></div></article>
+        <article class="card"><h2>Legnagyobb cégek</h2><p class="muted small">Legfeljebb 15 cég / tonna</p><div id="company-chart"></div></article>
+        <article class="card"><h2>Legnagyobb HAK tételek</h2><p class="muted small">Legfeljebb 15 kód / tonna</p><div id="code-chart"></div></article>
+      </section>
+      <section id="table-panel" class="card" hidden>
+        <div class="table-heading"><h2 id="table-title">Adatok</h2>
+          <button id="load-ktj" class="mutation" hidden>KTJ metaadatok betöltése</button></div>
+        <p id="table-note" class="muted small"></p>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Vízszintesen görgethető adattábla">
+          <table id="table"><thead></thead><tbody></tbody></table>
+        </div>
+        <div class="pagination"><button id="previous" aria-label="Előző oldal">Előző</button>
+          <span id="page" role="status"></span><button id="next" aria-label="Következő oldal">Következő</button></div>
+      </section>
+      <details class="card export-panel" open>
+        <summary>Exportok</summary>
+        <p class="muted small">A riport és az adatexportok az aktuális szűrést követik. A hibajegyzék és a teljes JSON biztonsági másolat a teljes munkamenetet tartalmazza. A mennyiségek kg-ban, illetve jelölt tonna oszlopokban szerepelnek.</p>
+        <div class="exports">
+          <a data-export="summary" class="button" download>Excel összesítő</a>
+          <a data-export="detail" class="button" download>Excel részletes</a>
+          <a data-export="ktj" class="button" download>Excel KTJ</a>
+          <a data-export="csv" class="button" download>CSV adatcsere</a>
+          <a data-export="json" class="button" download>JSON szűrt adatok</a>
+          <a data-export="report" class="button" target="_blank" rel="noopener">Vezetői riport / PDF</a>
+          <a data-export="missing" class="button" download>Hibajegyzék CSV</a>
+          <a data-export="backup" class="button" download>Teljes JSON mentés</a>
+        </div>
+      </details>
+      <p class="muted small footnote">Forrás: OKIR / saját cégadatok. A termékcsoportok átfedhetnek. Az összmennyiség a kijelölt adattípusok összege, nem nettó anyagmérleg. A KTJ-export a már betöltött metaadatokat tartalmazza.</p>
+    </div>
+  </div>
+</main>
+<noscript><p class="error">Az alkalmazás használatához engedélyezd a JavaScriptet.</p></noscript>
+{% endblock %}

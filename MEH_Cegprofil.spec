@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [('icon.ico', '.')]
+datas = [('icon.ico', '.'), ('config/product_groups.json', 'config')]
 datas += collect_data_files('matplotlib')
 datas += collect_data_files('PySide6')
 

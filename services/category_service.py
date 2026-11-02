@@ -25,6 +25,11 @@ class CategoryService:
             str(group): [str(code).strip() for code in codes if str(code).strip()]
             for group, codes in self.groups.items()
         }
+        self._code_to_groups = {}
+        for group, codes in self._normalized_groups.items():
+            if group != "Nem besorolható":
+                for code in set(codes):
+                    self._code_to_groups.setdefault(code, []).append(group)
 
     def _load_or_create(self) -> Dict[str, List[str]]:
         if not self.json_path.exists():
@@ -49,45 +54,11 @@ class CategoryService:
         if not code:
             return ["Nem besorolható"]
 
-        matches = []
-        for group, codes in self._normalized_groups.items():
-            if group == "Nem besorolható":
-                continue
-            if code in codes:
-                matches.append(group)
-
-        return matches if matches else ["Nem besorolható"]
+        return list(self._code_to_groups.get(code, ["Nem besorolható"]))
 
     def all_groups(self) -> List[str]:
         return list(self.groups.keys())
     
     
     def resolve_group(self, code) -> str:
-        """
-        Visszaadja a hulladékkódhoz tartozó termékcsoportot.
-        Több lehetséges metódusnevet és attribútumot is megpróbál,
-        hogy kompatibilis legyen a különböző verziókkal.
-        """
-        code_str = str(code).strip()
-
-        for method_name in [
-            "categorize_code",
-            "categorize",
-            "get_group_for_code",
-            "group_for_code",
-        ]:
-            method = getattr(self, method_name, None)
-            if callable(method):
-                try:
-                    result = method(code_str)
-                    if result:
-                        return str(result)
-                except Exception:
-                    pass
-
-        for attr_name in ["code_to_group", "_code_to_group", "group_by_code", "_group_by_code"]:
-            mapping = getattr(self, attr_name, None)
-            if isinstance(mapping, dict):
-                return str(mapping.get(code_str, "Nem besorolható"))
-
-        return "Nem besorolható"
+        return "; ".join(self.resolve_groups(code))

@@ -11,40 +11,28 @@ class KtjService:
         self.persistence = persistence
         self.cache: Dict[str, dict] = {}
 
-    def ensure_metadata_loaded(self, df: pd.DataFrame) -> None:
+    def ensure_metadata_loaded(self, df: pd.DataFrame, progress=None) -> None:
         if df is None or df.empty or "KTJ" not in df.columns:
             return
 
-        unique_ktjs = []
-        for val in df["KTJ"].dropna().tolist():
-            ktj = clean_int_like(val)
-            if ktj and ktj not in unique_ktjs:
-                unique_ktjs.append(ktj)
+        unique_ktjs = list(dict.fromkeys(filter(None, df["KTJ"].dropna().map(clean_int_like))))
 
         if not unique_ktjs:
             return
 
         client = OkirClient()
-        for ktj in unique_ktjs:
-            if ktj in self.cache:
-                continue
-            cached = None
-            try:
-                cached = self.persistence.load_ktj_meta(ktj)
-            except Exception:
-                cached = None
-            if cached is not None:
-                self.cache[ktj] = cached
-                continue
-            try:
-                payload = client.fetch_first_ktj_detail(ktj) or {}
-                self.cache[ktj] = payload
-                try:
+        try:
+            for index, ktj in enumerate(unique_ktjs, 1):
+                if ktj not in self.cache:
+                    payload = self.persistence.load_ktj_meta(ktj)
+                    if payload is None:
+                        payload = client.fetch_first_ktj_detail(ktj) or {}
                     self.persistence.save_ktj_meta(ktj, payload)
-                except Exception:
-                    pass
-            except Exception:
-                self.cache[ktj] = {}
+                    self.cache[ktj] = payload
+                if progress:
+                    progress(index, len(unique_ktjs), f"KTJ metaadat: {ktj}")
+        finally:
+            client.session.close()
 
     def enrich_with_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:

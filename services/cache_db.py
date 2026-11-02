@@ -73,8 +73,15 @@ class CacheDB:
         conn.commit()
 
     def clear_all(self):
+        self.close()
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.execute("DELETE FROM kuj_cache")
         conn.commit()
         conn.close()
         self._local.conn = None
+
+    def close(self):
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None

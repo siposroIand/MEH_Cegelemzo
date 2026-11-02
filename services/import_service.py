@@ -59,6 +59,7 @@ def build_source_from_excel_by_adoszam(
     client,
     log_fn: Optional[Callable[[str], None]] = None,
     progress_fn: Optional[Callable[[int, int, str], None]] = None,
+    missing_fn: Optional[Callable[[Dict], None]] = None,
 ) -> pd.DataFrame:
     df = pd.read_excel(excel_path)
     header_map = _build_header_map(df)
@@ -71,6 +72,13 @@ def build_source_from_excel_by_adoszam(
     records: List[Dict[str, Any]] = []
     seen: Set[Tuple[str, str]] = set()
     total = len(df)
+    company_cache = {}
+
+    def report_missing(company, reason):
+        if log_fn:
+            log_fn(f"Forrásimport: {company} | {reason}")
+        if missing_fn:
+            missing_fn({"Cég": company, "KÜJ": "", "Adattípus": "Forrásimport", "Ok": reason})
 
     for idx, row in df.iterrows():
         company_name_from_excel = safe_str(row.get(header_map["Teljes név"]))
@@ -94,6 +102,7 @@ def build_source_from_excel_by_adoszam(
             log_fn(f"{idx + 1}. sor | {company_name_from_excel or '-'} | Adószám: {raw_adoszam} | KSHKOD: {kshkod or 'érvénytelen'}")
 
         if not kshkod:
+            report_missing(company_name_from_excel, f"Érvénytelen adószám (sor: {idx + 2})")
             continue
 
         src_extras: Dict[str, Any] = {}
@@ -104,11 +113,14 @@ def build_source_from_excel_by_adoszam(
                 src_extras[target] = parse_date_to_str(val) if kind == "date" else safe_str(val)
 
         try:
-            companies = client.fetch_companies_by_kshkod(kshkod)
+            if kshkod not in company_cache:
+                company_cache[kshkod] = client.fetch_companies_by_kshkod(kshkod)
+            companies = company_cache[kshkod]
         except Exception as e:
-            if log_fn:
-                log_fn(f"KSHKOD lekérési hiba: {kshkod} | {e}")
+            report_missing(company_name_from_excel, f"KSHKOD lekérési hiba: {kshkod} | {e}")
             continue
+        if not companies:
+            report_missing(company_name_from_excel, f"Nincs OKIR találat: {kshkod}")
 
         for item in companies:
             cegnev = safe_str(item.get("MEGNEVEZES"))
@@ -116,6 +128,7 @@ def build_source_from_excel_by_adoszam(
             found_ksh = safe_str(item.get("KSHKOD"))
 
             if not cegnev or not kuj:
+                report_missing(company_name_from_excel, f"Hiányos OKIR cégrekord: {kshkod}")
                 continue
 
             key = (cegnev, kuj)

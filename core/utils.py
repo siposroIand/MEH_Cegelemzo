@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import Any, List, Optional, Tuple
 
 import pandas as pd
-from matplotlib.ticker import FuncFormatter
 
 
 def safe_str(v: Any) -> str:
@@ -180,12 +179,16 @@ def parse_hu_numeric(series: pd.Series) -> pd.Series:
 
 
 def axis_number_formatter(decimals=0):
+    from matplotlib.ticker import FuncFormatter
+
     def _fmt(x, pos):
         return format_hu_number(x, decimals)
     return FuncFormatter(_fmt)
 
 
 def axis_int_formatter():
+    from matplotlib.ticker import FuncFormatter
+
     def _fmt(x, pos):
         try:
             return str(int(round(x)))
