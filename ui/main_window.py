@@ -345,7 +345,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(12)
 
         header = QHBoxLayout()
-        title = QLabel("MÉH Cégelemző")
+        title = QLabel("MÉH Zrt. - Cégelemző szoftver")
         title.setObjectName("appTitle")
         header.addWidget(title)
         header.addStretch()
