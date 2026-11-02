@@ -1,4 +1,5 @@
 from typing import List
+from datetime import datetime
 
 import pandas as pd
 from services.filter_service import unique_quantities
@@ -6,7 +7,6 @@ from services.filter_service import unique_quantities
 from core.utils import (
     clean_int_like,
     format_phone,
-    format_quantity_auto_unit,
     parse_hu_numeric,
     split_address_parts,
 )
@@ -216,7 +216,7 @@ def build_outline_report_sheet(ws, grouped_df: pd.DataFrame):
                 ws.row_dimensions[rr].hidden = True
             ws.row_dimensions[company_row].outlineLevel = 0
 
-    tonna_format = '#,##0.0\ "t"'
+    tonna_format = r'#,##0.0\ "t"'
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=COL_QTY, max_col=COL_QTY):
         for cell in row:
             cell.number_format = tonna_format
@@ -330,13 +330,10 @@ def build_ktj_export(df: pd.DataFrame, ktj_service, category_service, load_metad
         out["PRODUCT_GROUP"] = out["HULLADEKKOD"].astype(str).apply(category_service.resolve_group)
 
     if "OSSZES_MENNYISEG" in out.columns:
-        out["Összes mennyiség"] = out["OSSZES_MENNYISEG"].apply(lambda x: format_quantity_auto_unit(x, 2))
         qty_col = "OSSZES_MENNYISEG"
     elif "MENNYISEG" in out.columns:
-        out["Összes mennyiség"] = out["MENNYISEG"].apply(lambda x: format_quantity_auto_unit(x, 2))
         qty_col = "MENNYISEG"
     else:
-        out["Összes mennyiség"] = ""
         qty_col = None
 
     if load_metadata:
@@ -374,6 +371,104 @@ def build_ktj_export(df: pd.DataFrame, ktj_service, category_service, load_metad
 # ---------------------------------------------------------------------------
 # Excel írók
 # ---------------------------------------------------------------------------
+
+def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str = "Összes adat") -> None:
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    if master.empty:
+        raise ValueError("Nincs a szűrésnek megfelelő exportálható adat.")
+    base = unique_quantities(master).copy()
+    base["HULLADEKKOD"] = base["HULLADEKKOD"].astype(str)
+    companies = sorted(base["CEGNEV"].unique())
+    codes = sorted(base["HULLADEKKOD"].unique())
+    if len(codes) + 1 > 16_384 or len(companies) + 2 > 1_048_576:
+        raise ValueError("A mátrix meghaladja az Excel mérethatárát. Szűkítsd a cégeket vagy a HAK-kódokat.")
+
+    quantities = (base.groupby(["CEGNEV", "HULLADEKKOD"])["OSSZES_MENNYISEG"].sum() / 1000).to_dict()
+    names = (
+        base.groupby("HULLADEKKOD")["HULLADEK_MEGNEVEZES"]
+        .agg(lambda values: "; ".join(sorted({str(value).strip() for value in values.dropna() if str(value).strip()})))
+        .to_dict()
+    )
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet("Cég–HAK mátrix")
+    sheet.freeze_panes = "B3"
+    sheet.sheet_view.showGridLines = False
+    sheet.print_title_rows = "1:2"
+    sheet.column_dimensions["A"].width = 40
+    sheet.row_dimensions[1].height = 25
+    sheet.row_dimensions[2].height = 72
+    for column in range(2, len(codes) + 2):
+        sheet.column_dimensions[get_column_letter(column)].width = 26
+
+    header_fill = PatternFill("solid", fgColor="087F74")
+    description_fill = PatternFill("solid", fgColor="E4F2EE")
+    stripe_fill = PatternFill("solid", fgColor="F3F6F7")
+    header_font = Font(bold=True, color="FFFFFF")
+    bold_font = Font(bold=True)
+    wrapped = Alignment(vertical="center", wrap_text=True)
+
+    def literal_cell(worksheet, value):
+        cell = WriteOnlyCell(worksheet, value=value)
+        if isinstance(value, str):
+            cell.data_type = "s"
+        return cell
+
+    for index, values in enumerate((
+        ["Cég"] + codes,
+        ["Mennyiség (t)"] + [names.get(code) or "Nincs megnevezés" for code in codes],
+    )):
+        cells = []
+        for value in values:
+            cell = literal_cell(sheet, value)
+            cell.fill = header_fill if index == 0 else description_fill
+            cell.font = header_font if index == 0 else bold_font
+            cell.alignment = wrapped
+            cells.append(cell)
+        sheet.append(cells)
+
+    # Stream one row at a time: large company/code matrices need not fill RAM.
+    for index, company in enumerate(companies):
+        cells = [literal_cell(sheet, company)]
+        cells[0].font = bold_font
+        cells[0].alignment = wrapped
+        for code in codes:
+            cell = WriteOnlyCell(sheet, value=quantities.get((company, code), 0.0))
+            cell.number_format = "#,##0.000"
+            cells.append(cell)
+        if index % 2 == 0:
+            for cell in cells:
+                cell.fill = stripe_fill
+        sheet.append(cells)
+
+    info = workbook.create_sheet("Szűrés")
+    info.column_dimensions["A"].width = 24
+    info.column_dimensions["B"].width = 100
+    for label, value in (
+        ("Készült", datetime.now().isoformat(timespec="minutes")),
+        ("Aktuális szűrés", filter_description),
+        ("Mértékegység", "Tonna (t), 1 t = 1000 kg"),
+        ("Összesítés", "Cégnév és HAK-kód szerint; a kiválasztott évek és adattípusok összege."),
+        ("Kategóriák", "Az átfedő termékcsoportok nem többszörözik a mennyiségeket."),
+        ("Megnevezések", "Egy HAK több megnevezése pontosvesszővel elválasztva jelenik meg."),
+        ("Üres kombinációk", "0: nincs mennyiség az adott cég–HAK kombinációra a szűrt adatokban."),
+        ("Pontosság", "A cellák teljes számértéket tárolnak; a megjelenítés három tizedesre kerekített."),
+    ):
+        cell = literal_cell(info, value)
+        cell.alignment = wrapped
+        info.append([literal_cell(info, label), cell])
+    workbook.save(path)
+
+
+def write_missing_excel(path, missing: pd.DataFrame) -> None:
+    out = missing.reindex(columns=["Cég", "KÜJ", "Adattípus", "Ok"])
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        out.to_excel(writer, index=False, sheet_name="Kimaradt lekérések")
+        style_excel_worksheet(writer.book["Kimaradt lekérések"])
+
 
 def write_summary_excel(path: str, master: pd.DataFrame, source_df: pd.DataFrame, groups: List[str]) -> None:
     out = build_summary_export(master, source_df, groups)
@@ -435,7 +530,7 @@ def style_excel_worksheet(ws):
         max_len = max(len(str(c.value)) if c.value is not None else 0 for c in col)
         ws.column_dimensions[letter].width = min(max(max_len + 2, 12), 38)
 
-    tonna_format = '#,##0.0\ "t"'
+    tonna_format = r'#,##0.0\ "t"'
     for cell in ws[1]:
         if cell.value and ("(t)" in str(cell.value) or "tonna" in str(cell.value).lower()):
             col_letter = cell.column_letter

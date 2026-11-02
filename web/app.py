@@ -14,13 +14,15 @@ from werkzeug.exceptions import HTTPException
 from core.constants import ADATTIPUS_LABELS, CACHE_DB, PRODUCT_GROUPS_JSON
 from services.cache_db import CacheDB
 from services.category_service import CategoryService
-from services.export_service import build_detail_export, write_detail_excel, write_ktj_excel, write_summary_excel
+from services.export_service import (
+    write_detail_excel, write_hak_matrix_excel, write_ktj_excel, write_missing_excel, write_summary_excel,
+)
 from services.fetch_service import fetch_data
 from services.filter_service import Filters
 from services.import_service import build_source_from_excel_by_adoszam
 from services.okir_client import OkirClient
 from services.persistence_service import PersistenceService
-from services.report_service import csv_bytes, dataset_bytes, read_dataset, records, report_html
+from services.report_service import read_dataset, records, report_html
 from web.workspace import Workspace
 
 
@@ -298,47 +300,40 @@ def create_app(config=None):
 
     @app.get("/api/export/<kind>")
     def export(kind):
+        if kind not in {"matrix", "summary", "detail", "ktj", "errors", "report"}:
+            abort(404)
         selected = filters()
         with workspace.lock:
             dataset = workspace.dataset
             master, raw, _totals = workspace.filtered(selected)
+        description = " | ".join(
+            f"{label}: {', '.join(map(str, values))}"
+            for label, values in (("Cég", selected.companies), ("Év", selected.years),
+                                  ("Termékcsoport", selected.categories), ("HAK", (selected.code,) if selected.code else ()),
+                                  ("Adattípus", tuple(ADATTIPUS_LABELS[k] for k in selected.types)))
+            if values
+        ) or "Összes adat"
         if kind == "report":
-            description = " | ".join(
-                f"{label}: {', '.join(map(str, values))}"
-                for label, values in (("Cég", selected.companies), ("Év", selected.years),
-                                      ("Termékcsoport", selected.categories), ("HAK", (selected.code,) if selected.code else ()),
-                                      ("Adattípus", tuple(ADATTIPUS_LABELS[k] for k in selected.types)))
-                if values
-            )
-            return report_html(master, dataset.missing, description or "Összes adat")
+            return report_html(master, dataset.missing, description)
         buffer = io.BytesIO()
-        if kind == "summary":
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if kind == "matrix":
+            write_hak_matrix_excel(buffer, master, description)
+            filename = "meh-ceg-hak-matrix.xlsx"
+        elif kind == "summary":
             write_summary_excel(buffer, master, dataset.source, workspace.categories.all_groups())
-            filename, mime = "meh-osszesito.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            filename = "meh-osszesito.xlsx"
         elif kind == "detail":
             write_detail_excel(buffer, master, dataset.source)
-            filename, mime = "meh-reszletes.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            filename = "meh-reszletes.xlsx"
         elif kind == "ktj":
             # Metadata loading is a separate, visible background operation.
             with workspace.lock:
                 write_ktj_excel(buffer, raw, workspace.ktj, workspace.categories, load_metadata=False)
-            filename, mime = "meh-ktj.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        elif kind == "csv":
-            buffer.write(csv_bytes(build_detail_export(master, dataset.source)))
-            filename, mime = "meh-reszletes.csv", "text/csv; charset=utf-8"
-        elif kind == "missing":
-            buffer.write(csv_bytes(dataset.missing))
-            filename, mime = "meh-hibak.csv", "text/csv; charset=utf-8"
-        elif kind in {"json", "backup"}:
-            source = dataset.source
-            exported_raw = dataset.raw if kind == "backup" else raw
-            if kind == "json" and not source.empty:
-                keys = set(zip(raw.get("CEGNEV", []), raw.get("SOURCE_KUJ", [])))
-                source = source.loc[[key in keys for key in zip(source["CEGNEV"], source["KUJ"])]]
-            buffer.write(dataset_bytes(source, exported_raw, dataset.missing))
-            filename, mime = f"meh-{kind}.json", "application/json"
+            filename = "meh-ktj.xlsx"
         else:
-            abort(404)
+            write_missing_excel(buffer, dataset.missing)
+            filename = "meh-kimaradt-lekeresek.xlsx"
         buffer.seek(0)
         return send_file(buffer, mimetype=mime, as_attachment=True, download_name=filename)
 

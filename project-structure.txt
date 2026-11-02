@@ -1,44 +1,20 @@
-cc/
-├─ app.py
-├─ web_app.py
-├─ web/
-│  ├─ app.py
-│  ├─ workspace.py
-│  ├─ templates/
-│  └─ static/
-├─ core/
-│  ├─ constants.py
-│  ├─ logger.py
-│  └─ utils.py
-├─ models/
-│  └─ records.py
-├─ services/
-│  ├─ aggregation_service.py
-│  ├─ cache_db.py
-│  ├─ category_service.py
-│  ├─ export_service.py
-│  ├─ report_service.py
-│  ├─ filter_service.py
-│  ├─ fetch_service.py
-│  ├─ import_service.py
-│  ├─ okir_client.py
-│  ├─ ktj_service.py
-│  └─ persistence_service.py
-├─ ui/
-│  ├─ main_window.py
-│  ├─ table_model.py
-│  └─ widgets.py
-├─ workers/
-│  └─ fetch_worker.py
-├─ config/
-│  └─ product_groups.json
-├─ tests/
-├─ tools/
-├─ requirements-core.txt
-├─ requirements-web.txt
-├─ requirements-test.txt
-├─ requirements.txt
-├─ README.md
-├─ data/
-├─ logs/
-└─ output/
+MEH_Cegelemzo/
+  app.py                         Web server entry point
+  web_app.py                     Compatibility entry point
+  requirements.txt               Web application dependencies
+  requirements-web.txt           Compatibility dependency manifest
+  requirements-test.txt          Tests and icon generation
+  core/                          Shared constants and parsing helpers
+  models/records.py              Analysis result types
+  services/                      Import, OKIR, analysis, Excel, reports, storage
+  web/
+    app.py                       Authenticated Flask API
+    workspace.py                 Background jobs and active dataset
+    templates/                   Hungarian HTML interface
+    static/                      Responsive UI and PWA assets
+  config/product_groups.json     HAK category mapping
+  tests/                         Service/API and Chromium/WebKit checks
+  tools/                         Benchmark and icon generation
+  .github/workflows/test.yml      Continuous integration
+  data/                          Runtime database (not versioned)
+  README.md                      Usage and deployment

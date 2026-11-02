@@ -1,25 +1,17 @@
-import sys
 import os
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QIcon
-from ui.main_window import MainWindow
 
+from waitress import serve
 
-def _resource_path(rel_path: str) -> str:
-    # PyInstaller kompatibilis (onedir/onefile)
-    base = getattr(sys, "_MEIPASS", os.path.abspath("."))
-    return os.path.join(base, rel_path)
+from web.app import create_app
 
 
 def main():
-    app = QApplication(sys.argv)
-
-    # App ikon (tálca / címsor)
-    app.setWindowIcon(QIcon(_resource_path("icon.ico")))
-
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    app = create_app()
+    try:
+        serve(app, host=os.environ.get("MEH_HOST", "127.0.0.1"),
+              port=int(os.environ.get("MEH_PORT", "8080")), threads=4)
+    finally:
+        app.extensions["workspace"].close()
 
 
 if __name__ == "__main__":

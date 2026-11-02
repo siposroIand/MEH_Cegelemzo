@@ -1,5 +1,5 @@
 "use strict";
-const CACHE = "meh-shell-v1";
+const CACHE = "meh-shell-v2";
 const ASSETS = ["/static/offline.html", "/static/app.css", "/static/app.js",
   "/static/icon.svg", "/static/icon-192.png", "/static/icon-512.png", "/static/apple-touch-icon.png"];
 self.addEventListener("install", (event) => {

@@ -1,18 +1,37 @@
 """Run explicitly: python -m tests.browser_check (Chromium + WebKit required)."""
+import io
 import tempfile
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
+import pandas as pd
+from openpyxl import load_workbook
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
-from services.report_service import dataset_bytes
 from tests.fixtures import dataset
 from web.app import create_app
 
 
 def main():
-    with tempfile.TemporaryDirectory() as directory:
+    with tempfile.TemporaryDirectory() as directory, \
+            patch("web.app.OkirClient") as company_client, patch("services.fetch_service.OkirClient") as waste_client:
+        source, raw, _missing = dataset()
+        def find_company(kshkod):
+            if kshkod == "99999999":
+                return []
+            company = source.iloc[0 if kshkod == "12345678" else 1]
+            return [{"MEGNEVEZES": company["CEGNEV"], "KUJ": company["KUJ"]}]
+        company_client.return_value.fetch_companies_by_kshkod.side_effect = find_company
+        waste_client.return_value.fetch.side_effect = lambda kuj, kind: raw[raw.SOURCE_KUJ == kuj].to_dict("records")
+        workbook = io.BytesIO()
+        pd.DataFrame([
+            {"Teljes név": name, "Adószám": tax, "Megye": "Pest", "Irányítószám": "2000",
+             "Település": "Szentendre", "Cím": "Minta utca"}
+            for name, tax in (("Minta Fém Kft.", "12345678-2-08"), ("Minta Papír Kft.", "12345679-2-08"),
+                              ("Kimaradt cég", "99999999-2-08"))
+        ]).to_excel(workbook, index=False)
         app = create_app({
             "DATABASE": Path(directory) / "browser.sqlite",
             "WEB_PASSWORD": "browser-test-password", "SECRET_KEY": "browser-test-only",
@@ -27,7 +46,6 @@ def main():
                     ("webkit-iphone", playwright.webkit, playwright.devices["iPhone 13"]),
                     ("webkit-ipad", playwright.webkit, playwright.devices["iPad (gen 7)"]),
                 ]
-                source, raw, missing = dataset()
                 for name, engine, device in cases:
                     browser = engine.launch()
                     context = browser.new_context(**device, accept_downloads=True)
@@ -41,14 +59,15 @@ def main():
                         expect(page.locator("#status")).not_to_have_text("Betöltés...")
                         page.get_by_role("link", name="Adatok importálása").click()
                         page.locator("#file").set_input_files({
-                            "name": "minta.json", "mimeType": "application/json",
-                            "buffer": dataset_bytes(source, raw, missing),
+                            "name": "minta.xlsx",
+                            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "buffer": workbook.getvalue(),
                         })
-                        page.get_by_role("button", name="Import indítása").click()
+                        page.get_by_role("button", name="Adatok betöltése", exact=True).click()
                         expect(page.locator("#status")).to_contain_text("Import kész", timeout=20000)
                         expect(page.locator("#kpi-companies")).to_have_text("2")
                         if not page.locator("#reset").is_visible():
-                            page.locator(".sidebar details").first.locator("summary").click()
+                            page.locator("#filter-panel > summary").click()
                         page.locator("#reset").click()
                         expect(page.locator("#years option:checked")).to_have_count(0)
                         page.get_by_role("button", name="Telephelyek / KTJ", exact=True).click()
@@ -59,18 +78,25 @@ def main():
                         page.locator("#code").fill("170405")
                         expect(page.locator("#page")).to_contain_text("60 sor")
                         with page.expect_download() as downloaded:
-                            page.get_by_role("link", name="CSV adatcsere").click()
+                            page.get_by_role("link", name="Cég–HAK mátrix letöltése (.xlsx)").click()
                         download = downloaded.value
                         assert download.failure() is None
-                        assert download.suggested_filename == "meh-reszletes.csv"
+                        assert download.suggested_filename == "meh-ceg-hak-matrix.xlsx"
+                        matrix = load_workbook(io.BytesIO(Path(download.path()).read_bytes()))["Cég–HAK mátrix"]
+                        assert matrix["B1"].value == "170405"
+                        assert matrix["B2"].value == "Vas és acél"
+                        assert matrix["A3"].value == "Minta Fém Kft."
+                        assert abs(matrix["B3"].value - raw.loc[raw.HULLADEKKOD == "170405", "MENNYISEG"].sum() / 1000) < .000001
+                        assert not page.locator('[data-export="summary"]').is_visible()
+                        expect(page.locator('[data-export="csv"],[data-export="json"],[data-export="backup"]')).to_have_count(0)
                         with page.expect_popup() as popup_info:
-                            page.get_by_role("link", name="Vezetői riport / PDF").click()
+                            page.get_by_role("link", name="Nyomtatható riport / PDF").click()
                         popup = popup_info.value
                         expect(popup.get_by_role("heading", name="MÉH • Vezetői riport")).to_be_visible()
                         popup.close()
                         page.get_by_role("button", name="Kimaradt / hibák", exact=True).click()
                         expect(page.locator("#page")).to_contain_text("1 sor")
-                        expect(page.locator("#table")).to_contain_text("Teszt: nincs adat")
+                        expect(page.locator("#table")).to_contain_text("Nincs OKIR találat")
                         for width in ([320, 390, 844] if "iphone" in name else [device["viewport"]["width"]]):
                             page.set_viewport_size({"width": width, "height": 844})
                             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), f"{name}: horizontal overflow at {width}"
@@ -81,11 +107,11 @@ def main():
                         expect(page.get_by_role("heading", name="Nincs kapcsolat")).to_be_visible()
                         context.set_offline(False)
                         page.get_by_role("link", name="Újrapróbálkozás").click()
-                        expect(page.locator("#filename")).to_contain_text("minta.json")
+                        expect(page.locator("#filename")).to_contain_text("minta.xlsx")
                         page.locator("#logout").click()
                         expect(page.get_by_label("Munkaterület jelszava")).to_be_visible()
                         assert not errors, errors
-                        print(f"PASS {name}: import, filters, pagination, CSV download, report, responsive layout, offline, logout")
+                        print(f"PASS {name}: Excel import, filters, pagination, matrix values/download, report, responsive layout, offline, logout")
                     finally:
                         context.close()
                         browser.close()
