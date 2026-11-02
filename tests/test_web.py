@@ -91,11 +91,11 @@ class WebTests(unittest.TestCase):
         self.assertEqual(load_workbook(io.BytesIO(errors.data)).worksheets[0]["A2"].value, "Kimaradt cég")
         report = self.client.get("/api/export/report?" + query)
         self.assertIn("Minta Fém Kft.", report.text)
-        for removed in ("csv", "json", "backup", "missing"):
+        for removed in ("backup", "missing"):
             self.assertEqual(self.client.get(f"/api/export/{removed}").status_code, 404)
         self.assertEqual(self.client.get("/api/export/matrix?years=1900").status_code, 400)
         html = self.client.get("/").text
-        for removed in ("csv", "json", "backup", "missing"):
+        for removed in ("backup", "missing"):
             self.assertNotIn(f'data-export="{removed}"', html)
         self.assertIn('data-export="matrix"', html)
 
@@ -106,8 +106,69 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/state").json["rows"], 120)
         response = self.client.post("/api/import", headers={"X-CSRF-Token": self.csrf},
                                     data={"file": (io.BytesIO(b"pickle"), "unsafe.okirpkg")})
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(self.wait()["status"], "error")
+        self.assertEqual(self.client.get("/api/state").json["rows"], 120)
         self.assertEqual(self.client.get("/api/view?years=abc").status_code, 400)
+
+    def test_portable_exports_filters_and_package_reimport(self):
+        from services.package_service import read_package
+        from services.report_service import read_dataset
+        from tests.test_portable import legacy_package
+
+        self.login()
+        self.assertEqual(self.client.get("/api/export/pkg").status_code, 400)
+        self.upload()
+        metadata = {"MEGNEVEZES": "Mentett telephely"}
+        self.workspace.ktj.persistence.save_ktj_meta("1000000", metadata)
+        query = urlencode({"years": 2025, "companies": "Minta Fém Kft.", "code": "170405",
+                           "types": "HULL_ATADAS"})
+        expected = self.raw[(self.raw.EV == 2025) & (self.raw.CEGNEV == "Minta Fém Kft.")]
+        response = self.client.get("/api/export/csv?" + query)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment", response.headers["Content-Disposition"])
+        frame = pd.read_csv(io.BytesIO(response.data), sep=";", decimal=",", dtype={"SOURCE_KUJ": str})
+        self.assertEqual(len(frame), len(expected))
+        self.assertAlmostEqual(frame.MENNYISEG.sum(), expected.MENNYISEG.sum())
+        self.assertEqual(set(frame.SOURCE_KUJ), {"001234567"})
+        for kind, count in (("source-csv", 1), ("missing-csv", 1)):
+            response = self.client.get(f"/api/export/{kind}?{query}")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(pd.read_csv(io.BytesIO(response.data), sep=";")), count)
+        response = self.client.get("/api/export/json?" + query)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(read_dataset(response.data)[1]), len(self.raw))
+        self.assertEqual(self.upload(response.data)["status"], "done")
+        response = self.client.get("/api/export/dataset?" + query)
+        self.assertEqual(response.status_code, 200)
+        book = load_workbook(io.BytesIO(response.data))
+        self.assertEqual(book["Nyers adatok (kg)"].max_row, len(self.raw) + 1)
+        response = self.client.get("/api/export/pkg?" + query)
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        package = read_package(data)
+        self.assertEqual(len(package[1]), len(self.raw))
+        self.assertEqual(package[4], {"1000000": metadata})
+        self.workspace.ktj.cache.clear()
+        response = self.client.post(
+            "/api/import", headers={"X-CSRF-Token": self.csrf},
+            data={"file": (io.BytesIO(data), "shared.okirpkg")},
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(self.wait()["status"], "done")
+        self.assertEqual(self.workspace.ktj.cache["1000000"], metadata)
+        response = self.client.post(
+            "/api/import", headers={"X-CSRF-Token": self.csrf},
+            data={"file": (io.BytesIO(legacy_package(dataset())), "old.okirpkg")},
+        )
+        self.assertEqual(response.status_code, 202)
+        job = self.wait()
+        self.assertEqual(job["status"], "error")
+        self.assertIn("asztali", job["message"])
+        self.assertEqual(self.client.get("/api/state").json["rows"], len(self.raw))
+        html = self.client.get("/").text
+        for kind in ("pkg", "json", "dataset", "csv", "source-csv", "missing-csv"):
+            self.assertIn(f'data-export="{kind}"', html)
 
     def test_excel_import_and_ktj_metadata(self):
         self.login()

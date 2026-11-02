@@ -1,7 +1,7 @@
 import html
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -20,8 +20,35 @@ def records(frame):
     return json.loads(frame.to_json(orient="records", force_ascii=False))
 
 
+def csv_bytes(frame):
+    def safe_cell(value):
+        if isinstance(value, str) and (
+            value.startswith(("\t", "\r", "\n")) or value.lstrip().startswith(("=", "+", "-", "@"))
+        ):
+            return "'" + value
+        return value
+
+    safe = frame.map(safe_cell)
+    safe.columns = [safe_cell(column) for column in safe.columns]
+    return safe.to_csv(
+        index=False, sep=";", decimal=",", lineterminator="\r\n",
+    ).encode("utf-8-sig")
+
+
+def dataset_bytes(source, raw, missing):
+    payload = {
+        "format": FORMAT, "version": 1, "quantity_unit": "kg",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for key, frame in (("source", source), ("raw", raw), ("missing", missing)):
+        payload[key] = frame.astype(object).where(pd.notna(frame), None).to_dict(orient="records")
+    data = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    read_dataset(data)
+    return data
+
+
 def read_dataset(data):
-    """Read legacy backups only; JSON is no longer an export format."""
+    """Read and validate a portable dataset, including earlier JSON backups."""
     payload = json.loads(data)
     if not isinstance(payload, dict) or payload.get("format") != FORMAT or payload.get("version") != 1:
         raise ValueError("Nem támogatott MÉH JSON formátum vagy verzió.")
@@ -49,6 +76,8 @@ def read_dataset(data):
     if not raw.empty:
         for column in ("EV", "MENNYISEG", "HULLADEK_VESZELYES_10"):
             raw[column] = pd.to_numeric(raw[column], errors="raise")
+            if not raw[column].dropna().map(math.isfinite).all():
+                raise ValueError(f"Nem véges számérték: {column}")
         years = raw["EV"].dropna()
         if not years.between(1900, 2200).all() or not (years % 1 == 0).all():
             raise ValueError("Érvénytelen év.")

@@ -88,7 +88,16 @@ def main():
                         assert matrix["A3"].value == "Minta Fém Kft."
                         assert abs(matrix["B3"].value - raw.loc[raw.HULLADEKKOD == "170405", "MENNYISEG"].sum() / 1000) < .000001
                         assert not page.locator('[data-export="summary"]').is_visible()
-                        expect(page.locator('[data-export="csv"],[data-export="json"],[data-export="backup"]')).to_have_count(0)
+                        page.get_by_text("Megosztható csomag és adatexportok", exact=True).click()
+                        for kind in ("csv", "json", "pkg", "dataset", "source-csv", "missing-csv"):
+                            expect(page.locator(f'[data-export="{kind}"]')).to_be_visible()
+                        with page.expect_download() as downloaded:
+                            page.locator('[data-export="csv"]').click()
+                        csv_data = Path(downloaded.value.path()).read_bytes()
+                        assert csv_data.startswith(b"\xef\xbb\xbf")
+                        csv_frame = pd.read_csv(io.BytesIO(csv_data), sep=";", decimal=",", dtype={"HULLADEKKOD": str})
+                        assert len(csv_frame) == 60
+                        assert set(csv_frame.HULLADEKKOD) == {"170405"}
                         with page.expect_popup() as popup_info:
                             page.get_by_role("link", name="Nyomtatható riport / PDF").click()
                         popup = popup_info.value

@@ -79,8 +79,48 @@ egy mennyiség. Példa:
 A termékcsoportos összesítő, a részletes HAK-lista, a KTJ-export és a
 kimaradt lekérések Excel-exportja továbbra is elérhető. A KTJ-export a
 **KTJ szerint** nézetben már betöltött metaadatokat használja; önmagában
-nem indít új hálózati lekérést. CSV- és új JSON-export nincs.
+nem indít új hálózati lekérést.
 A vezetői riport HTML-ként menthető; böngészőből nyomtatással PDF-be menthető.
+
+### Megosztható PKG és további adatexportok
+
+Az **Exportálás** menüben, illetve a webes **Megosztható csomag és
+adatexportok** szakaszban az alábbi lehetőségek is elérhetők:
+
+| Export | Tartalom és szűrés |
+|---|---|
+| Megosztható `.okirpkg` | Teljes forrás-, nyers- és hibatábla, a rendelkezésre álló KTJ-metaadatok; asztali exportnál az aktuális szűrők és nézet is |
+| MÉH `.json` | Teljes forrás-, nyers- és hibatábla; visszaimportálható, KTJ-metaadatok és nézetbeállítások nélkül |
+| Teljes adatállomány `.xlsx` | Három munkalap: Forráscégek, Nyers adatok (kg), Kimaradt lekérések; szűréstől függetlenül |
+| Nyers adatok `.csv` | Minden nyers sor, amely megfelel az aktuális cég-, év-, termékcsoport-, HAK- és adattípus-szűrésnek |
+| Forráscégek `.csv` | A cégszűrésnek megfelelő forrásadatok; a többi szűrő nem vonatkozik rájuk |
+| Kimaradt lekérések `.csv` | A teljes munkamenet hibalistája |
+
+A PKG, JSON és teljes Excel **a szűrőkkel elrejtett adatokat is tartalmazza**;
+megosztás előtt ezt vedd figyelembe. A PKG nem titkosított.
+A CSV UTF-8 BOM-os, pontosvesszős, tizedesvesszős fájl, a mennyiségek kg-ban
+maradnak. A képletnek értelmezhető szövegek elé védő aposztróf kerül.
+Az azonosítókat CSV megnyitásakor szövegoszlopként importáld Excelbe, hogy
+a kezdő nullák megmaradjanak. A JSON/PKG és az új teljes Excel ezeket
+szövegként őrzi meg. A teljes Excel adatexport, nem forrásimport-sablon;
+visszatöltéshez a PKG-t vagy a MÉH JSON-t használd.
+
+Az **Importálás → Megosztható PKG betöltése** megnyitja az új és a régi
+`.okirpkg` csomagokat is (`.pkg` és `.zip` kiterjesztés is választható).
+Az új formátum ZIP-ben tárolt, verziózott JSON-adatokat használ, nem pickle-t.
+Az import nem indít OKIR-lekérést, lecseréli az aktív adatokat, helyi mentést
+készít, és asztalon visszaállítja a csomagban tárolt szűrőket.
+Sikertelen importnál az aktív adatállomány változatlan marad.
+
+A régi, pickle-alapú csomagokat **csak megbízható forrásból**, az asztali
+alkalmazásban, külön megerősítés után töltsd be. A korlátozott olvasó a régi
+exportáló szokásos pandas/NumPy táblatípusait támogatja; idegen vagy nem
+támogatott objektumokat elutasít. Ez nem általános pickle-olvasó vagy
+biztonsági sandbox. A betöltött csomagot újraexportálva már az új formátumot
+kapod. A webes változat csak az új PKG-t fogadja el; az asztali nézetbeállításokat
+nem alkalmazza. Az új PKG-t a régi alkalmazásverziók nem tudják megnyitni.
+PKG-nél a fájl és a kicsomagolt tartalom is legfeljebb 100 MB,
+JSON/PKG esetén táblánként legfeljebb 250 000 sor támogatott.
 
 ## Adatok és helyi mentések
 
@@ -97,9 +137,8 @@ A meglévő `data/okir_cache.db` sémája változatlan. Az asztali alkalmazás
 automatikusan visszatölti az utoljára aktív asztali mentést; ennek hiányában
 az aktív webes, majd a legújabb mentést. Az **Exportálás → Helyi mentés**
 elnevezett mentést készít, a **Korábbi mentés** gomb a régebbieket nyitja meg.
-Régi MÉH JSON csak importként támogatott. A korábban eltávolított
-pickle/`.okirpkg` olvasót nem állítjuk vissza; ilyen fájlt a régi, megbízható
-asztali környezetben kell helyi adatbázismentéssé alakítani.
+A korábbi és új MÉH JSON mentések egyaránt betölthetők. Másik gépre
+átvihető, visszatölthető mentéshez az új megosztható PKG ajánlott.
 
 Alapértelmezésben az indítás könyvtára tartalmazza a `data/`, `logs/` és
 `output/` mappákat. A `MEH_DATA_HOME` környezeti változóval másik, írható,
@@ -160,7 +199,8 @@ HTTPS reverse proxy szükséges; a backend maradjon loopback címen.
 iPhone/iPad Safariban HTTPS-en a főképernyőhöz adható, de nem offline
 elemző. Céges adatok nem kerülnek a service worker gyorsítótárába.
 Webes feltöltés: maximum 20 MB, 100 MB kicsomagolt XLSX, 2000 forráscég;
-régi JSON-importnál táblánként 250 000 sor.
+JSON/PKG-importnál táblánként 250 000 sor. A 20 MB-os webes feltöltési korlát
+a JSON- és PKG-fájlokra is vonatkozik.
 
 ## Fejlesztés
 
