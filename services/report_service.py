@@ -35,7 +35,7 @@ def csv_bytes(frame):
     ).encode("utf-8-sig")
 
 
-def dataset_bytes(source, raw, missing):
+def dataset_bytes(source, raw, missing, *, enforce_row_limit=True):
     payload = {
         "format": FORMAT, "version": 1, "quantity_unit": "kg",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -43,11 +43,11 @@ def dataset_bytes(source, raw, missing):
     for key, frame in (("source", source), ("raw", raw), ("missing", missing)):
         payload[key] = frame.astype(object).where(pd.notna(frame), None).to_dict(orient="records")
     data = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
-    read_dataset(data)
+    read_dataset(data, enforce_row_limit=enforce_row_limit)
     return data
 
 
-def read_dataset(data):
+def read_dataset(data, *, enforce_row_limit=True):
     """Read and validate a portable dataset, including earlier JSON backups."""
     payload = json.loads(data)
     if not isinstance(payload, dict) or payload.get("format") != FORMAT or payload.get("version") != 1:
@@ -57,7 +57,7 @@ def read_dataset(data):
     frames = []
     for key in ("source", "raw", "missing"):
         rows = payload.get(key)
-        if not isinstance(rows, list) or len(rows) > MAX_ROWS:
+        if not isinstance(rows, list) or (enforce_row_limit and len(rows) > MAX_ROWS):
             raise ValueError(f"Érvénytelen vagy túl nagy JSON tábla: {key}")
         for row in rows:
             if not isinstance(row, dict) or len(row) > 100:

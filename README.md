@@ -142,11 +142,17 @@ a hibalista teljes. Ezek UTF-8 BOM-os, pontosvesszős, tizedesvesszős fájlok,
 kg-mennyiségekkel és képletvédett szövegekkel. Az azonosítókat CSV-ből
 szövegoszlopként kell importálni a kezdő nullák megőrzéséhez.
 
-Az **Importálás → Megosztható PKG betöltése** megnyitja az új és a régi
+Az **Importálás → Megosztható PKG-k betöltése** megnyitja az új és a régi
 `.okirpkg` csomagokat is (`.pkg` és `.zip` kiterjesztés is választható).
 Az új formátum ZIP-ben tárolt, verziózott JSON-adatokat használ, nem pickle-t.
 Az import nem indít OKIR-lekérést, lecseréli az aktív adatokat, helyi mentést
-készít, és asztalon visszaállítja a csomagban tárolt szűrőket.
+készít, és egyetlen csomag esetén asztalon visszaállítja a csomagban tárolt szűrőket.
+Asztalon egyszerre több megye csomagja is kijelölhető (Ctrl/Shift vagy Ctrl+A).
+Ezek forrás-, nyers- és hibatáblái összeadódnak, a teljesen azonos sorok csak
+egyszer maradnak meg. A korábbi aktív adatok nem adódnak hozzá.
+Több csomagnál minden szűrő alaphelyzetbe kerül, hogy az összes betöltött adat
+látszódjon. A KTJ-metaadatok is összeadódnak; azonos KTJ esetén a kiválasztási
+listában utolsó csomag értéke érvényesül.
 Sikertelen importnál az aktív adatállomány változatlan marad.
 
 A régi, pickle-alapú csomagokat **csak megbízható forrásból**, az asztali
@@ -156,8 +162,13 @@ támogatott objektumokat elutasít. Ez nem általános pickle-olvasó vagy
 biztonsági sandbox. A betöltött csomagot újraexportálva már az új formátumot
 kapod. A webes változat csak az új PKG-t fogadja el; az asztali nézetbeállításokat
 nem alkalmazza. Az új PKG-t a régi alkalmazásverziók nem tudják megnyitni.
-PKG-nél a fájl és a kicsomagolt tartalom is legfeljebb 100 MB,
-JSON/PKG esetén táblánként legfeljebb 250 000 sor támogatott.
+Az asztali PKG-import és -export nem alkalmaz rögzített fájlméret-,
+kicsomagolási vagy sorszámkorlátot; a feldolgozható méretet a rendelkezésre
+álló memória és tárhely határozza meg. Nagy csomagot csak megbízható forrásból
+nyiss meg. Az összefűzött adatok új PKG-ként is elmenthetők.
+A webes PKG-feldolgozás kicsomagolási korlátja továbbra is 100 MB;
+webes PKG és minden JSON-import/export esetén táblánként legfeljebb
+250 000 sor támogatott. A nagy asztali PKG-k emiatt weben nem feltétlenül nyithatók meg.
 
 ## Adatok és helyi mentések
 

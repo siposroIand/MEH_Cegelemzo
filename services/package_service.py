@@ -1,6 +1,7 @@
 import io
 import json
 import pickle
+from pathlib import Path
 import zipfile
 
 import numpy as np
@@ -70,34 +71,36 @@ def validate_extras(state, metadata):
         raise ValueError("Érvénytelen PKG KTJ-metaadat.")
 
 
-def write_package(target, source, raw, missing, state=None, metadata=None):
+def write_package(target, source, raw, missing, state=None, metadata=None, *, enforce_limits=True):
     if all(frame.empty for frame in (source, raw, missing)):
         raise ValueError("Nincs exportálható adatállomány.")
     state = {} if state is None else state
     metadata = {} if metadata is None else metadata
     validate_extras(state, metadata)
     contents = {
-        "dataset.json": dataset_bytes(source, raw, missing),
+        "dataset.json": dataset_bytes(source, raw, missing, enforce_row_limit=enforce_limits),
         "state.json": json.dumps(state, ensure_ascii=False, allow_nan=False).encode("utf-8"),
         "ktj_meta.json": json.dumps(metadata, ensure_ascii=False, allow_nan=False).encode("utf-8"),
     }
-    if sum(map(len, contents.values())) > MAX_PACKAGE_BYTES:
+    if enforce_limits and sum(map(len, contents.values())) > MAX_PACKAGE_BYTES:
         raise ValueError("A PKG kicsomagolt mérete legfeljebb 100 MB lehet.")
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in contents.items():
             archive.writestr(name, content)
 
 
-def read_package(data, *, allow_legacy=False):
-    if len(data) > MAX_PACKAGE_BYTES:
+def read_package(data, *, allow_legacy=False, enforce_limits=True):
+    """Read package bytes or a local path; desktop callers may disable size limits."""
+    size = len(data) if isinstance(data, bytes) else Path(data).stat().st_size
+    if enforce_limits and size > MAX_PACKAGE_BYTES:
         raise ValueError("A PKG fájl legfeljebb 100 MB lehet.")
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with zipfile.ZipFile(io.BytesIO(data) if isinstance(data, bytes) else data) as archive:
             entries = archive.infolist()
             names = [entry.filename for entry in entries]
             if len(names) != len(set(names)) or len(names) > 8:
                 raise ValueError("Érvénytelen PKG fájllista.")
-            if sum(entry.file_size for entry in entries) > MAX_PACKAGE_BYTES:
+            if enforce_limits and sum(entry.file_size for entry in entries) > MAX_PACKAGE_BYTES:
                 raise ValueError("A PKG kicsomagolt mérete legfeljebb 100 MB lehet.")
             allowed = {"dataset.json", "state.json", "ktj_meta.json", "source.pkl", "raw.pkl", "missing.pkl"}
             if set(names) - allowed:
@@ -114,11 +117,14 @@ def read_package(data, *, allow_legacy=False):
                     if type(frame) is not pd.DataFrame:
                         raise ValueError("A régi PKG nem adattáblát tartalmaz.")
                     frames.append(frame)
-                frames = read_dataset(dataset_bytes(*frames))
+                frames = read_dataset(
+                    dataset_bytes(*frames, enforce_row_limit=enforce_limits),
+                    enforce_row_limit=enforce_limits,
+                )
             else:
                 if any(name.endswith(".pkl") for name in names):
                     raise ValueError("Kevert régi és új PKG formátum.")
-                frames = read_dataset(archive.read("dataset.json"))
+                frames = read_dataset(archive.read("dataset.json"), enforce_row_limit=enforce_limits)
             state = json.loads(archive.read("state.json")) if "state.json" in names else {}
             metadata = json.loads(archive.read("ktj_meta.json")) if "ktj_meta.json" in names else {}
             validate_extras(state, metadata)
@@ -127,3 +133,32 @@ def read_package(data, *, allow_legacy=False):
             return *frames, state, metadata
     except (zipfile.BadZipFile, pickle.UnpicklingError, EOFError) as exc:
         raise ValueError("Sérült vagy nem támogatott PKG csomag.") from exc
+
+
+def read_packages(paths, *, allow_legacy=False, enforce_limits=True):
+    """Validate all packages before combining their tables and metadata."""
+    if not paths:
+        raise ValueError("Válassz legalább egy PKG fájlt.")
+    tables = [[], [], []]
+    metadata = {}
+    state = {}
+    for path in paths:
+        try:
+            source, raw, missing, state, extra = read_package(
+                path, allow_legacy=allow_legacy, enforce_limits=enforce_limits,
+            )
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{Path(path).name}: {exc}") from exc
+        for parts, frame in zip(tables, (source, raw, missing)):
+            parts.append(frame)
+        metadata.update(extra)
+    if len(paths) == 1:
+        return *(parts[0] for parts in tables), state, metadata
+    merged = []
+    for parts in tables:
+        nonempty = [frame for frame in parts if not frame.empty]
+        merged.append(
+            pd.concat(nonempty, ignore_index=True).drop_duplicates(ignore_index=True)
+            if nonempty else pd.DataFrame()
+        )
+    return *merged, {}, metadata

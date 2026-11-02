@@ -12,7 +12,7 @@ from openpyxl import load_workbook
 
 from services.export_service import write_dataset_excel
 from services.ktj_service import KtjService
-from services.package_service import read_package, write_package
+from services.package_service import MAX_PACKAGE_BYTES, read_package, read_packages, write_package
 from services.persistence_service import PersistenceService
 from services.report_service import csv_bytes, dataset_bytes, read_dataset
 from tests.fixtures import dataset
@@ -130,6 +130,47 @@ class PortableTests(unittest.TestCase):
             dataset_bytes(*self.tables)
         with patch("services.report_service.MAX_ROWS", 1), self.assertRaises(ValueError):
             read_dataset(dataset_bytes(*dataset()))
+
+    def test_desktop_reads_packages_larger_than_100_mb(self):
+        payload = dataset_bytes(*self.tables)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large.okirpkg"
+            for compression in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                with self.subTest(compression=compression):
+                    with zipfile.ZipFile(path, "w", compression=compression) as archive:
+                        with archive.open("dataset.json", "w") as entry:
+                            for _ in range(100):
+                                entry.write(b" " * (1024 * 1024))
+                            entry.write(payload)
+                    with zipfile.ZipFile(path) as archive:
+                        self.assertGreater(archive.getinfo("dataset.json").file_size, MAX_PACKAGE_BYTES)
+                    if compression == zipfile.ZIP_STORED:
+                        self.assertGreater(path.stat().st_size, MAX_PACKAGE_BYTES)
+                    with self.assertRaisesRegex(ValueError, "100 MB"):
+                        read_package(path)
+                    self.assert_tables_equal(read_package(path, enforce_limits=False)[:3])
+
+    def test_desktop_package_round_trip_above_250000_rows(self):
+        source = pd.DataFrame({"CEGNEV": ["Cég"] * 250_001, "KUJ": ["001"] * 250_001})
+        buffer = io.BytesIO()
+        with self.assertRaisesRegex(ValueError, "túl nagy"):
+            write_package(buffer, source, pd.DataFrame(), pd.DataFrame())
+        write_package(buffer, source, pd.DataFrame(), pd.DataFrame(), enforce_limits=False)
+        with self.assertRaisesRegex(ValueError, "túl nagy"):
+            read_package(buffer.getvalue())
+        restored = read_package(buffer.getvalue(), enforce_limits=False)
+        pd.testing.assert_frame_equal(source, restored[0])
+
+    def test_unlimited_packages_still_validate_contents(self):
+        with self.assertRaisesRegex(ValueError, "Nem támogatott típus"):
+            read_package(legacy_package((ForbiddenObject(), *self.tables[1:])),
+                         allow_legacy=True, enforce_limits=False)
+        invalid = self.tables[1].copy()
+        invalid.loc[0, "EV"] = 1800
+        with self.assertRaisesRegex(ValueError, "Érvénytelen év"):
+            write_package(io.BytesIO(), self.tables[0], invalid, self.tables[2], enforce_limits=False)
+        with self.assertRaisesRegex(ValueError, "legalább egy"):
+            read_packages([], enforce_limits=False)
 
     def test_csv_excel_compatibility_and_formula_protection(self):
         frame = pd.DataFrame({
