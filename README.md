@@ -1,182 +1,184 @@
 # MÉH Cégelemző
 
-Teljesen webes, magyar nyelvű alkalmazás OKIR hulladékadatok és céges
-forrásadatok elemzéséhez. Asztali böngészőben, iPhone-on és iPaden is
-használható; Safariból a főképernyőre tehető. A feldolgozás a szerveren fut.
-Nincs telepítendő asztali kliens, Qt, matplotlib vagy Windows-build.
+Magyar nyelvű **asztali alkalmazás** OKIR hulladékadatok és céges
+Excel-forrásadatok elemzéséhez. Az alapértelmezett `python app.py` ismét
+natív PySide6/Qt ablakot nyit: nem indít webszervert, nem kell hozzá
+böngésző vagy webes jelszó.
 
-## Három lépés
+## Indítás
 
-1. **Excel betöltése:** tölts fel egy céges `.xlsx` forrásfájlt, válaszd ki
-   a lekérendő adattípusokat, majd indítsd a betöltést.
-2. **Szűrés:** válassz céget, évet, termékcsoportot, adattípust vagy HAK-kódot.
-   A grafikonokra kattintva is szűrhetsz. Az aktuális szűrés a mutatók
-   fölött látható.
-3. **Kimutatás letöltése:** a kiemelt gomb a cég–HAK Excel-mátrixot készíti
-   el; mellette nyomtatható vezetői riport érhető el.
+Python **3.11 vagy újabb** szükséges.
 
-Az import a háttérben fut; közben a korábbi adatok olvashatók. Egyszerre egy
-módosító feladat futhat. Sikeres import után automatikus szerveroldali mentés
-készül; a **Korábbi mentések** panelen elnevezett mentést is készíthetsz.
-Újraindításkor az aktív mentés áll vissza.
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python app.py
+```
 
-### Cég–HAK Excel-mátrix
+Linux/macOS alatt az aktiválás: `source .venv/bin/activate`.
+Linuxon a Qt rendszerfüggőségei is szükségesek; Ubuntu alatt például
+`libegl1` és `libopengl0`.
 
-A `Cég–HAK mátrix` munkalap pontos elrendezése:
+## Használat
 
-| | A | B | C |
-|---|---|---|---|
-| 1. sor | Cég | 150101 | 170405 |
-| 2. sor | Mennyiség (t) | Papír csomagolás | Vas és acél |
-| 3. sor | Minta Cég A | 1,250 | 0,500 |
-| 4. sor | Minta Cég B | 0,000 | 2,750 |
+1. **Excel betöltése:** válassz `.xlsx` forrást és lekérdezési típust.
+   A forrásimport, az OKIR-lekérés, az aggregálás és az automatikus helyi
+   mentés háttérben fut. Sikertelen betöltés nem cseréli le az aktív adatokat.
+2. **Szűrés:** cég, év, termékcsoport, adattípus és HAK szerint. Több érték
+   is kijelölhető; üres kijelölés az összeset jelenti. A HAK-mező részletekre
+   is keres, több kód `;`-vel választható el. A grafikonokra kattintva is
+   szűrhetsz. Betöltéskor a legutóbbi két adatév aktív; a **Szűrők törlése**
+   minden évet visszahoz.
+3. **Cég × Év / HAK mátrix:** a felső kiemelt gomb vagy az **Exportálás**
+   menü elkészíti az aktuális szűrés szerinti Excel-kimutatást.
 
-- A cégek függőlegesen, a HAK-kódok vízszintesen jelennek meg.
-- A HAK-kód alatt a megnevezése szerepel. Ha a szűrt adatokban ugyanahhoz
-  a kódhoz több megnevezés tartozik, mindegyik megmarad, pontosvesszővel
-  elválasztva; hiányzó névnél „Nincs megnevezés” látható.
-- A cellák **tonnában összesített, valódi számértékek**. A kijelölt évek,
-  adattípusok és azonos nevű cégek KÜJ-azonosítóinak mennyiségei összeadódnak.
-  A több termékcsoportba tartozó tétel nem számít többször.
-- Három tizedes jelenik meg, de a tárolt számértéket nem kerekítjük.
-  A hiányzó cég–HAK kombináció értéke 0; ez nem jelenti azt, hogy egy
-  sikertelen OKIR-lekéréshez bizonyítottan nulla hulladék tartozik.
-- A két fejlécsor és a cégnevek görgetéskor rögzítve maradnak.
-- A külön `Szűrés` munkalap rögzíti az export szűrőit és mértékegységét.
-  Üres eredményből nem készül félrevezető mátrix.
+A világos, egységes felületen külön áttekintés, adattáblák, KTJ-nézet és
+hibajegyzék található. A táblázatok a látható cellákat modellből jelenítik
+meg; a szűrőgépelés késleltetett, a nézetek csak megnyitáskor frissülnek.
+A hosszabb Excel-exportok, mentésbetöltések és KTJ-lekérések háttérben
+futnak. Egyszerre egy ilyen művelet indulhat; bezárás előtt az alkalmazás
+megváratja a befejezést. Az export idején a szűrők tovább használhatók,
+de a fájl az export indításakor kijelölt adatokat tartalmazza.
 
-A **További Excel-kimutatások** összecsukható részben megmaradt a
-termékcsoportos összesítő, a részletes lista, a KTJ-kimutatás és a kimaradt
-lekérések listája. **CSV- és JSON-export nincs**, a korábbi export-URL-ek
-404-et adnak. A hibajegyzék is `.xlsx` formátumú.
+### Új Cég–Év–HAK Excel-mátrix
 
-PDF: a nyomtatható riportot böngészőben a **Nyomtatás → Mentés PDF-ként**
-útvonalon mentheted. iOS-en **Megosztás → Nyomtatás → előnézet megnyitása →
-Megosztás → Mentés a Fájlokba**. Ez böngészős PDF-mentés, nem szerveroldali
-PDF-generálás.
+A cégek **függőlegesen**, az év–HAK párok **vízszintesen** szerepelnek.
+Három fejlécsor teszi egyértelművé, melyik évhez és hulladékhoz tartozik
+egy mennyiség. Példa:
 
-## Adatok és szűrés
+| | B | C | D | E |
+|---|---|---|---|---|
+| ÉV | 2024 | 2025 | 2025 | Összes év |
+| HAK | 150101 | 150101 | 170405 | Összes hulladék |
+| Cég / HAK MEGNEVEZÉS (t) | Papír csomagolás | Papír csomagolás | Vas és acél | Összes hulladék (t) |
+| Minta Cég A | 1,250 | – | 0,500 | 1,750 |
+| Minta Cég B | – | 0,750 | 2,000 | 2,750 |
+
+- Mértékegység: **tonna**; az alapadatok kg-ban vannak.
+- Nulla és hiányzó kombináció esetén **`-`** jelenik meg, kitöltés nélkül.
+  Ez számformátum: a mögöttes érték 0 marad, ezért az Excelben továbbra is
+  összegezhető. Sikertelen OKIR-lekérés esetén a jel nem bizonyít nulla
+  hulladékot; ellenőrizd a **Kimaradt** nézetet.
+- Pozitív érték: **zöld cella**; negatív korrekció: **narancssárga cella**.
+  A kis, nem nulla értékek is színt kapnak.
+- A cellák teljes számértéket tárolnak, legalább 3, legfeljebb 9 tizedest
+  jelenítenek meg. A kódok szövegek, így a kezdő nullák megmaradnak.
+- Az utolsó oszlop a sor összes hulladékát tartalmazza a kiválasztott
+  évekre, HAK-kódokra és adattípusokra. Több adattípus összege nem nettó
+  anyagmérleg. Az azonos nevű cégek KÜJ-azonosítóinak mennyiségei összeadódnak.
+- Az átfedő termékcsoportok nem többszörözik a mennyiségeket.
+  Egy év–HAK pár több megnevezése pontosvesszővel elválasztva marad meg.
+  Hiányzó év külön **Ismeretlen év** oszlopcsoportba kerül.
+- A három fejlécsor és a cégoszlop rögzített. A **Szűrés** munkalap
+  dokumentálja a szűrőket, az egységet és a jelmagyarázatot.
+- Üres eredmény vagy az Excel sor-/oszlopkorlátjának túllépése esetén
+  egyértelmű hibaüzenet jelenik meg. A fájl ideiglenes helyre készül,
+  és csak sikeres írás után váltja fel a célfájlt.
+
+A termékcsoportos összesítő, a részletes HAK-lista, a KTJ-export és a
+kimaradt lekérések Excel-exportja továbbra is elérhető. A KTJ-export a
+**KTJ szerint** nézetben már betöltött metaadatokat használja; önmagában
+nem indít új hálózati lekérést. CSV- és új JSON-export nincs.
+A vezetői riport HTML-ként menthető; böngészőből nyomtatással PDF-be menthető.
+
+## Adatok és helyi mentések
 
 Az Excel kötelező oszlopai: `Teljes név` / `Cégnév`, `Adószám`, `Megye`,
 `Irányítószám`, `Település`, `Cím`. Az ékezet nélküli fejlécváltozatok és az
 opcionális kapcsolattartási/pénzügyi mezők is működnek. Az OKIR-cégkeresés
 az adószám első nyolc számjegyét használja.
 
-Maximum 20 MB-os feltöltés, 100 MB kicsomagolt XLSX és 2000 Excel-forráscég
-engedélyezett egy importban. Hibás fájl nem cseréli le az aktív adatokat.
-Részleges OKIR-eredmény új munkamenetként mentődik; a korábbi mentés
-visszatölthető. A sikertelen lekérések a **Kimaradt / hibák** nézetben
-láthatók. Félbeszakadt háttérlekérést újra kell indítani.
+Az OKIR lekérdezéshez internet szükséges. A már mentett adatok helyben,
+internet nélkül is megnyithatók, szűrhetők és exportálhatók. Részleges
+eredmény is mentődik; a hiányokat a **Kimaradt** nézet mutatja.
 
-Több érték is kijelölhető. Üres kijelölés: összes. Induláskor és új adat
-betöltésekor a legutóbbi két adatév aktív; a **Szűrők törlése** minden évet
-visszahoz. A HAK-mező részletekre is keres, több kód `;`-vel választható el.
-A cégadatok nézetére csak a cégnévszűrő, a hibajegyzékre semmilyen elemzési
-szűrő nem vonatkozik. A KTJ-címadatok külön gombbal tölthetők be; a
-KTJ-export a már betöltött metaadatokat tartalmazza.
+A meglévő `data/okir_cache.db` sémája változatlan. Az asztali alkalmazás
+automatikusan visszatölti az utoljára aktív asztali mentést; ennek hiányában
+az aktív webes, majd a legújabb mentést. Az **Exportálás → Helyi mentés**
+elnevezett mentést készít, a **Korábbi mentés** gomb a régebbieket nyitja meg.
+Régi MÉH JSON csak importként támogatott. A korábban eltávolított
+pickle/`.okirpkg` olvasót nem állítjuk vissza; ilyen fájlt a régi, megbízható
+asztali környezetben kell helyi adatbázismentéssé alakítani.
 
-Az alapadatok mértékegysége kg; az Excel-mátrix tonnára vált. A termékcsoportok
-átfedhetnek, ezért csoportösszegeik nem adhatók össze. Több adattípus összege
-nem nettó anyagmérleg.
+Alapértelmezésben az indítás könyvtára tartalmazza a `data/`, `logs/` és
+`output/` mappákat. A `MEH_DATA_HOME` környezeti változóval másik, írható,
+tartós munkakönyvtár adható meg. A meglévő mentések használatához ugyanarra
+a könyvtárra mutasson, mint korábban. Ne futtass egyszerre több példányt
+vagy webes és asztali importot ugyanazzal az adatkönyvtárral.
 
-### Korábbi adatok megőrzése
+Biztonsági mentéshez állítsd le az alkalmazást, majd másold a teljes
+adatkönyvtárat, vagy használj SQLite backupot. Futó WAL-adatbázisból a
+`.db` fájl önmagában nem elég.
 
-A meglévő `data/okir_cache.db` mentései és cache-e változatlan sémával
-tovább használhatók. Adatot vagy helyi mentést az átállás nem töröl.
-Korábbi verzióból már elkészített MÉH JSON csak **importként** maradt meg:
-**Korábbi mentések → Adatkezelési beállítások → Régi mentés betöltése**.
-Ez nem új JSON-export funkció. A 20 MB-os feltöltési korlát és táblánként
-250 000 soros importkorlát erre is vonatkozik.
+## Windows-csomag készítése
 
-Az asztali forrás, a régi Windows-build és az elavult asztali kézikönyv
-eltávolításra került. A korábbi változat a Git-előzményekben elérhető.
-Pickle/`.okirpkg` olvasó vagy író nincs a webes alkalmazásban.
+Windows alatt, az aktivált virtuális környezetben:
 
-## Indítás
+```powershell
+pip install -r requirements-build.txt
+pyinstaller --noconfirm MEH_Cegprofil.spec
+```
 
-Python **3.11 vagy újabb** szükséges.
+Az eredmény a `dist/MEH_Cegprofil/` könyvtár; a teljes könyvtárat kell
+átadni, nem csak az `.exe` fájlt. Az adatkönyvtár legyen írható, ne
+a `Program Files` alatt tárold. A csomaghoz nem kell külön Python.
+A **Windows desktop build** GitHub Actions munkafolyamat pull requestnél
+automatikusan fut, és kézzel is indítható:
+teszteli és ZIP-ként feltölti a Windows-csomagot. Linuxos buildből
+nem lesz Windows EXE; a Windows-kiadást Windows gépen is ellenőrizni kell.
+
+## Opcionális webes változat
+
+A meglévő webes változat megmarad, de nem ez az alapértelmezett alkalmazás.
+Külön környezetben telepíthető, Qt és matplotlib nélkül:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-web.txt
 read -rs -p "Munkaterület jelszava (legalább 12 karakter): " MEH_WEB_PASSWORD
 echo
 export MEH_WEB_PASSWORD
-python app.py
+python web_app.py
 ```
 
-Windows PowerShell esetén az aktiválás `.venv\Scripts\Activate.ps1`;
-a `MEH_WEB_PASSWORD` változót a helyi titokkezelésből állítsd be.
-
-Alapértelmezett cím: **http://127.0.0.1:8080**. A szerver Waitress-t használ.
-A korábbi `python web_app.py` indítás és `requirements-web.txt` telepítés
-kompatibilitási belépési pontként továbbra is ugyanazt a webappot indítja.
-Régi környezet helyett új virtuális környezetet használva a korábbi asztali
-függőségek sem maradnak telepítve.
-
-### iPhone / iPad és HTTPS
-
-1. A Python-szervert egy tartósan elérhető gépen kell futtatni. Az iPhone-on
-   a `localhost` az iPhone-t jelenti, nem a szervert.
-2. Tegyél elé HTTPS reverse proxyt, például Caddyt. A saját DNS-név mutasson
-   a szerverre; a 80/443 port legyen elérhető:
-
-   ```caddyfile
-   cegelemzo.example.hu {
-       reverse_proxy 127.0.0.1:8080
-   }
-   ```
-
-3. HTTPS mögött állítsd be `MEH_HTTPS=1`-re a biztonságos session-cookie-hoz.
-   A backend maradjon loopback címen; a folyamatot szolgáltatáskezelővel
-   (például systemd) indítsd.
-4. Safariban nyisd meg a saját HTTPS-címet, jelentkezz be, majd válaszd a
-   **Megosztás → Főképernyőhöz adás** lehetőséget.
-
-A főképernyős használathoz HTTPS kell (fejlesztéskor a localhost kivétel).
-Az app nem natív App Store-alkalmazás, és nem offline elemző. Hálózat
-nélkül tájékoztató jelenik meg; cégadatok, API-válaszok, exportok és
-hitelesített HTML nem kerülnek a service worker gyorsítótárába.
+Windows PowerShellben a `MEH_WEB_PASSWORD` változót a helyi titokkezelésből
+állítsd be. Alapértelmezett cím: **http://127.0.0.1:8080**.
+A webes felület korábbi, két fejlécsoros cég–HAK exportja nem változott;
+az új év szerinti mátrix az asztali alkalmazásban érhető el.
 
 | Környezeti változó | Jelentés |
 |---|---|
 | `MEH_WEB_PASSWORD` | Kötelező, legalább 12 karakteres közös munkaterület-jelszó |
-| `MEH_SECRET_KEY` | Opcionális, titokként kezelt véletlen kulcs; nélküle újraindításkor új belépés szükséges |
-| `MEH_DATA_HOME` | Írható, tartós munkakönyvtár; alapérték az indítás könyvtára |
+| `MEH_SECRET_KEY` | Opcionális titkos kulcs; nélküle újraindításkor új belépés szükséges |
+| `MEH_DATA_HOME` | Írható, tartós munkakönyvtár |
 | `MEH_HOST` / `MEH_PORT` | Alapérték `127.0.0.1` / `8080` |
-| `MEH_HTTPS` | `1`: csak HTTPS-en küldött session-cookie |
+| `MEH_HTTPS` | HTTPS reverse proxy mögött `1` |
 
-Ez egy **közös, jelszóval védett munkaterület**, nem felhasználónként
-elkülönített SaaS. Külön csapatoknak külön példány, jelszó és adatkönyvtár
-szükséges. Egy példányhoz **egy szerverfolyamatot** használj; ne indíts több
-workert/konténert ugyanarra az adatkönyvtárra.
-
-A `MEH_DATA_HOME/data/okir_cache.db` tárolja a mentéseket, metaadatokat,
-OKIR-cache-t és az aktív mentés azonosítóját. Biztonsági mentéshez SQLite
-backupot használj, vagy állítsd le a szervert az adatkönyvtár másolásakor.
-Futó WAL-adatbázisból a `.db` önmagában nem elég.
+A webapp közös munkaterület, nem felhasználónként elkülönített SaaS.
+Egy adatkönyvtárhoz egy szerverfolyamatot használj. Távoli használathoz
+HTTPS reverse proxy szükséges; a backend maradjon loopback címen.
+iPhone/iPad Safariban HTTPS-en a főképernyőhöz adható, de nem offline
+elemző. Céges adatok nem kerülnek a service worker gyorsítótárába.
+Webes feltöltés: maximum 20 MB, 100 MB kicsomagolt XLSX, 2000 forráscég;
+régi JSON-importnál táblánként 250 000 sor.
 
 ## Fejlesztés
 
-`services/`: import, ütemezett párhuzamos OKIR-lekérés, szűrés, aggregálás,
-Excel-export, riport és SQLite-tárolás. `web/`: Flask API, jelszavas
-munkamenet/CSRF, háttérfeladatok, lapozott táblázatok és PWA-felület.
+`ui/`: Qt felület és táblamodellek. `workers/`: asztali háttérműveletek.
+`services/`: közös import, OKIR, aggregálás, szűrés, export és SQLite-tárolás.
+`web/`: opcionális Flask API és PWA.
 
 ```bash
 pip install -r requirements-test.txt
-python -m unittest discover -s tests -v
+QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -v
+python -m tools.benchmark
 python -m playwright install --with-deps chromium webkit
 python -m tests.browser_check
-python -m tools.benchmark
 ```
 
-A regresszió az Excel-mátrix tényleges celláit, két fejlécsorát, tonnára
-váltását, szűrését és duplázásmentes összegzését is ellenőrzi. A böngészős
-folyamat Chromiumon, iPhone- és iPad-méretű WebKiten fut, valódi `.xlsx`
-letöltéssel. A tesztadatok szintetikusak; az OKIR-hálózat mockolt.
-Fizikai iOS-telepítést és PDF-megosztást külön kell ellenőrizni.
-
-A mátrix Excel-író soronként ír, nem épít nagy cellamátrixot a memóriában.
-A benchmark 100 000 soron méri az aggregálást és tárolást; ez nem hálózati
-sebességígéret. Ikonok újragenerálása: `python tools/generate_icons.py`.
+PowerShellben a tesztparancs előtt `$env:QT_QPA_PLATFORM = "offscreen"`.
+A tesztek szintetikus adatokkal, mockolt OKIR-hálózattal ellenőrzik a
+mátrix tényleges celláit, színeit, számformátumát, évbontását és szűrését,
+a háttérműveletek alatti Qt eseménykezelést, a hibás export sértetlen
+célfájlját és a helyi mentések visszatöltését. A benchmark 100 000 soron
+mér; nem jelent hálózati sebességígéretet.

@@ -121,6 +121,27 @@ class ServiceTests(unittest.TestCase):
         self.assertAlmostEqual(sum(sum(row[1:]) for row in list(sheet.values)[2:]) * 1000,
                                summary(master)["quantity_kg"])
 
+        buffer = io.BytesIO()
+        write_hak_matrix_excel(buffer, master, "Minden év és adattípus", by_year=True)
+        sheet = load_workbook(buffer)["Cég–Év–HAK mátrix"]
+        self.assertEqual(list(sheet.values), [
+            ("ÉV", 2024, 2025, 2025, 2025, "Összes év"),
+            ("HAK", "001001", "001001", "170405", "999999", "Összes hulladék"),
+            ("Cég / HAK MEGNEVEZÉS (t)", "Első", "Első; Másik", "Vas", "Nincs megnevezés", "Összes hulladék (t)"),
+            ("Alpha", .125, .275, .000125, 0, .400125),
+            ("Beta", 0, 0, 1, -.025, .975),
+        ])
+        self.assertEqual(sheet.freeze_panes, "B4")
+        self.assertEqual(sheet.print_title_rows, "$1:$3")
+        self.assertEqual(sheet["B2"].data_type, "s")
+        self.assertEqual(sheet["E4"].value, 0)
+        self.assertEqual(sheet["E4"].number_format.split(";")[2], '"-"')
+        self.assertEqual(sheet["E4"].fill.patternType, None)
+        self.assertEqual(sheet["B5"].fill.patternType, None)
+        self.assertEqual(sheet["D4"].fill.fgColor.rgb, "00CCF0E7")
+        self.assertEqual(sheet["E5"].fill.fgColor.rgb, "00FFE4CC")
+        self.assertTrue(all(cell.data_type == "n" for row in sheet.iter_rows(min_row=4, min_col=2) for cell in row))
+
         selected = Filters(years=(2025,), categories=("Fém",), types=("HULL_ATADAS",), code="1704")
         buffer = io.BytesIO()
         write_hak_matrix_excel(buffer, filter_frame(master, selected))
@@ -145,6 +166,25 @@ class ServiceTests(unittest.TestCase):
             for row in sheet:
                 self.assertTrue(all(cell.data_type != "f" for cell in row))
         self.assertEqual(workbook.worksheets[0]["A3"].value, "=1+1")
+        buffer = io.BytesIO()
+        write_hak_matrix_excel(buffer, master, "=3+3", by_year=True)
+        for sheet in load_workbook(buffer):
+            self.assertTrue(all(cell.data_type != "f" for row in sheet for cell in row))
+
+    def test_year_matrix_keeps_missing_year_and_rejects_excess_year_code_columns(self):
+        master = aggregate_data(self.raw, self.source, self.categories).master
+        master["EV"] = None
+        buffer = io.BytesIO()
+        write_hak_matrix_excel(buffer, master, by_year=True)
+        sheet = load_workbook(buffer).worksheets[0]
+        self.assertEqual(sheet["B1"].value, "Ismeretlen év")
+        self.assertAlmostEqual(sum(row[-1] for row in list(sheet.values)[3:]),
+                               summary(master)["quantity_kg"] / 1000)
+        wide = pd.DataFrame({
+            "CEGNEV": ["A"] * 16383, "EV": list(range(16383)), "HULLADEKKOD": ["001001"] * 16383,
+        })
+        with self.assertRaisesRegex(ValueError, "mérethatár"):
+            write_hak_matrix_excel(io.BytesIO(), wide, by_year=True)
 
     def test_snapshot_roundtrip_and_index(self):
         persistence = PersistenceService(Path(self.temp.name) / "db.sqlite")
@@ -175,6 +215,18 @@ class ServiceTests(unittest.TestCase):
         result = fetch_data(self.source.iloc[:1], True, True, ["HULL_ATADAS"], cache_path=path)
         self.assertEqual(result.raw.MENNYISEG.sum(), 75)
         client.return_value.fetch.assert_called_once()
+
+    @patch("services.fetch_service.OkirClient")
+    def test_parallel_fetch_initializes_new_cache_once(self, client):
+        client.return_value.fetch.return_value = [{"EV": 2025, "HULLADEKKOD": "170405", "MENNYISEG": 75}]
+        with patch("services.fetch_service.CacheDB", wraps=CacheDB) as cache_constructor:
+            result = fetch_data(
+                self.source, True, False, ["HULL_ATADAS", "HULL_ATVETEL"],
+                max_workers=6, cache_path=Path(self.temp.name) / "new-cache.sqlite",
+            )
+        cache_constructor.assert_called_once()
+        self.assertTrue(result.missing.empty)
+        self.assertEqual(len(result.raw), 4)
 
     @patch("services.fetch_service.OkirClient")
     def test_fetch_failures_are_reported(self, client):

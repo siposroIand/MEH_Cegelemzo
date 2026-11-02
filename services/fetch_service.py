@@ -32,11 +32,12 @@ def fetch_data(source_df, use_cache, force_refresh, selected_types,
     workers = min(6, max(1, int(max_workers)))
     lock = threading.Lock()
     completed = 0
+    # Initialize WAL/schema once; CacheDB keeps a separate connection per thread.
+    cache = CacheDB(cache_path)
 
     def partition_jobs(partition):
         nonlocal completed
         rows, missing = [], []
-        cache = CacheDB(cache_path)
         client = OkirClient()
         try:
             for company, kuj, kind in partition:
