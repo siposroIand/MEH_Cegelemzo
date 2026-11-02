@@ -15,14 +15,16 @@ from core.constants import ADATTIPUS_LABELS, CACHE_DB, PRODUCT_GROUPS_JSON
 from services.cache_db import CacheDB
 from services.category_service import CategoryService
 from services.export_service import (
-    write_detail_excel, write_hak_matrix_excel, write_ktj_excel, write_missing_excel, write_summary_excel,
+    write_dataset_excel, write_detail_excel, write_hak_matrix_excel, write_ktj_excel,
+    write_missing_excel, write_summary_excel,
 )
 from services.fetch_service import fetch_data
 from services.filter_service import Filters
 from services.import_service import build_source_from_excel_by_adoszam
 from services.okir_client import OkirClient
 from services.persistence_service import PersistenceService
-from services.report_service import read_dataset, records, report_html
+from services.report_service import csv_bytes, dataset_bytes, read_dataset, records, report_html
+from services.package_service import read_package, write_package
 from web.workspace import Workspace
 
 
@@ -193,11 +195,11 @@ def create_app(config=None):
     def import_data():
         upload = request.files.get("file")
         if not upload or not upload.filename:
-            raise ValueError("Válassz .xlsx vagy MÉH .json fájlt.")
+            raise ValueError("Válassz .xlsx, MÉH .json vagy .okirpkg fájlt.")
         name = Path(upload.filename.replace("\\", "/")).name
         extension = Path(name).suffix.lower()
-        if extension not in {".xlsx", ".json"}:
-            raise ValueError("Csak .xlsx és MÉH .json fájl tölthető fel; pickle/okirpkg nem.")
+        if extension not in {".xlsx", ".json", ".okirpkg", ".pkg", ".zip"}:
+            raise ValueError("Csak .xlsx, MÉH .json és PKG fájl tölthető fel.")
         content = upload.read()
         kinds = request.form.getlist("types")
         if extension == ".xlsx" and (not kinds or any(kind not in ADATTIPUS_LABELS for kind in kinds)):
@@ -206,8 +208,11 @@ def create_app(config=None):
         refresh = request.form.get("force_refresh") == "true"
 
         def operation():
+            metadata = {}
             if extension == ".json":
                 source, raw, missing = read_dataset(content)
+            elif extension in {".okirpkg", ".pkg", ".zip"}:
+                source, raw, missing, _state, metadata = read_package(content)
             else:
                 with zipfile.ZipFile(io.BytesIO(content)) as archive:
                     if sum(item.file_size for item in archive.infolist()) > 100 * 1024 * 1024:
@@ -235,7 +240,7 @@ def create_app(config=None):
                     missing = pd.concat([pd.DataFrame(failures), result.missing], ignore_index=True)
             if source.empty and raw.empty and missing.empty:
                 raise ValueError("A fájl nem tartalmaz feldolgozható adatot.")
-            workspace.replace(source, raw, missing, name)
+            workspace.replace(source, raw, missing, name, metadata=metadata)
             return f"Import kész: {len(raw)} adatsor, {len(missing)} kimaradt/hibás lekérés."
 
         return submit(operation)
@@ -300,12 +305,20 @@ def create_app(config=None):
 
     @app.get("/api/export/<kind>")
     def export(kind):
-        if kind not in {"matrix", "summary", "detail", "ktj", "errors", "report"}:
+        if kind not in {
+            "matrix", "summary", "detail", "ktj", "errors", "report",
+            "pkg", "json", "dataset", "csv", "source-csv", "missing-csv",
+        }:
             abort(404)
         selected = filters()
         with workspace.lock:
             dataset = workspace.dataset
             master, raw, _totals = workspace.filtered(selected)
+            metadata = workspace.ktj.export_metadata(dataset.raw) if kind == "pkg" else {}
+        if kind in {"pkg", "json", "dataset", "csv", "source-csv", "missing-csv"} and all(
+            frame.empty for frame in (dataset.source, dataset.raw, dataset.missing)
+        ):
+            raise ValueError("Nincs exportálható adatállomány.")
         description = " | ".join(
             f"{label}: {', '.join(map(str, values))}"
             for label, values in (("Cég", selected.companies), ("Év", selected.years),
@@ -317,7 +330,26 @@ def create_app(config=None):
             return report_html(master, dataset.missing, description)
         buffer = io.BytesIO()
         mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        if kind == "matrix":
+        if kind == "pkg":
+            write_package(buffer, dataset.source, dataset.raw, dataset.missing, metadata=metadata)
+            filename, mime = "meh-megoszthato.okirpkg", "application/zip"
+        elif kind == "json":
+            buffer.write(dataset_bytes(dataset.source, dataset.raw, dataset.missing))
+            filename, mime = "meh-adatok.json", "application/json"
+        elif kind == "dataset":
+            write_dataset_excel(buffer, dataset.source, dataset.raw, dataset.missing)
+            filename = "meh-teljes-adatallomany.xlsx"
+        elif kind in {"csv", "source-csv", "missing-csv"}:
+            frame = raw
+            if kind == "source-csv":
+                frame = dataset.source
+                if selected.companies and not frame.empty:
+                    frame = frame[frame["CEGNEV"].isin(selected.companies)]
+            elif kind == "missing-csv":
+                frame = dataset.missing
+            buffer.write(csv_bytes(frame))
+            filename, mime = f"meh-{kind}.csv", "text/csv; charset=utf-8"
+        elif kind == "matrix":
             write_hak_matrix_excel(buffer, master, description)
             filename = "meh-ceg-hak-matrix.xlsx"
         elif kind == "summary":

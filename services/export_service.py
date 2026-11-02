@@ -12,6 +12,28 @@ from core.utils import (
 )
 
 
+def write_dataset_excel(target, source, raw, missing):
+    tables = (("Forráscégek", source), ("Nyers adatok (kg)", raw), ("Kimaradt lekérések", missing))
+    for _name, frame in tables:
+        if len(frame) > 1_048_575 or len(frame.columns) > 16_384:
+            raise ValueError("Az adatállomány túllépi az Excel sor- vagy oszlopkorlátját.")
+        if any(len(str(value)) > 32_767 for value in frame.columns) or any(
+            isinstance(value, str) and len(value) > 32_767
+            for row in frame.itertuples(index=False, name=None) for value in row
+        ):
+            raise ValueError("Az adatállomány túllépi az Excel cellánkénti szövegkorlátját.")
+    with pd.ExcelWriter(target, engine="openpyxl") as writer:
+        for name, frame in tables:
+            frame.to_excel(writer, sheet_name=name, index=False)
+            sheet = writer.sheets[name]
+            sheet.freeze_panes = "A2"
+            sheet.auto_filter.ref = sheet.dimensions
+            for row in sheet:
+                for cell in row:
+                    if isinstance(cell.value, str):
+                        cell.data_type = "s"
+
+
 def build_detail_export(master: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
     if master.empty:
         return pd.DataFrame()

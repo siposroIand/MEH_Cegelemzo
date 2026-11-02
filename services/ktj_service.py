@@ -11,6 +11,18 @@ class KtjService:
         self.persistence = persistence
         self.cache: Dict[str, dict] = {}
 
+    def export_metadata(self, raw):
+        metadata = {}
+        column = "KTJ" if "KTJ" in raw else "SOURCE_KTJ"
+        if column in raw:
+            for ktj in filter(None, raw[column].dropna().map(clean_int_like).unique()):
+                payload = self.cache.get(ktj)
+                if payload is None:
+                    payload = self.persistence.load_ktj_meta(ktj)
+                if payload is not None:
+                    metadata[ktj] = payload.copy()
+        return metadata
+
     def ensure_metadata_loaded(self, df: pd.DataFrame, progress=None) -> None:
         if df is None or df.empty or "KTJ" not in df.columns:
             return

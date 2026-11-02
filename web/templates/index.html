@@ -32,11 +32,12 @@
         </form>
       </details>
       <details class="card" id="import-panel">
-        <summary>Excel betöltése</summary>
+        <summary>Excel / JSON / PKG betöltése</summary>
         <form id="import-form">
-          <label for="file">Cégeket tartalmazó Excel (.xlsx)</label>
-          <input id="file" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
+          <label for="file">Forrás Excel vagy megosztható MÉH mentés</label>
+          <input id="file" name="file" type="file" accept=".xlsx,.json,.okirpkg,.pkg,.zip" required>
           <p class="muted small">Maximum 20 MB és 2000 forráscég / Excel. Az import lecseréli az aktív adatokat; a korábbi mentések megmaradnak.</p>
+          <p class="muted small">A JSON/PKG betöltése nem kérdez le az OKIR-ból. A régi, pickle-alapú PKG-t előbb az asztali alkalmazásban nyisd meg és exportáld újra.</p>
           <fieldset><legend>Lekérendő adatok</legend>
             <label class="check"><input type="checkbox" name="types" value="HULL_KELETKEZES"> Keletkezés</label>
             <label class="check"><input type="checkbox" name="types" value="HULL_ATVETEL"> Átvétel</label>
@@ -61,8 +62,8 @@
           <form id="legacy-import">
             <label for="legacy-file">Korábbi verzió mentésének átvétele</label>
             <input id="legacy-file" name="file" type="file" accept=".json,application/json" required>
-            <p class="muted small">Csak a korábbi MÉH-appból már elmentett JSON átvételéhez. Új mentések a szerveren készülnek.</p>
-            <button type="submit" class="mutation">Régi mentés betöltése</button>
+            <p class="muted small">Korábbi és új MÉH JSON mentések is visszatölthetők.</p>
+            <button type="submit" class="mutation">JSON mentés betöltése</button>
           </form>
         </details>
       </details>
@@ -116,6 +117,18 @@
             <a data-export="errors" class="button" download>Kimaradt lekérések</a>
           </div>
           <p class="muted small">A kimaradt lekérések listája a teljes munkamenetet mutatja. A többi kimutatás követi a szűrést.</p>
+        </details>
+        <details class="advanced">
+          <summary>Megosztható csomag és adatexportok</summary>
+          <div class="exports">
+            <a data-export="pkg" class="button" download>Megosztható PKG</a>
+            <a data-export="json" class="button" download>Visszaimportálható JSON</a>
+            <a data-export="dataset" class="button" download>Teljes adatállomány Excelben</a>
+            <a data-export="csv" class="button" download>CSV nyers adatok (szűrt, kg)</a>
+            <a data-export="source-csv" class="button" download>CSV forráscégek (cégszűrés)</a>
+            <a data-export="missing-csv" class="button" download>CSV kimaradt lekérések</a>
+          </div>
+          <p class="muted small">A PKG, JSON és teljes Excel minden adatot tartalmaz, szűréstől függetlenül. A PKG a betöltött KTJ-metaadatokat is megőrzi. A hibalista mindig teljes; a CSV nyers adatok követik az összes szűrőt.</p>
         </details>
       </section>
       <p class="muted small footnote">Forrás: OKIR / saját cégadatok. A termékcsoportok átfedhetnek. Az összmennyiség a kijelölt adattípusok összege, nem nettó anyagmérleg. A KTJ-export a már betöltött metaadatokat tartalmazza.</p>
