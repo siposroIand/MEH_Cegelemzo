@@ -1,20 +1,26 @@
 MEH_Cegelemzo/
-  app.py                         Web server entry point
-  web_app.py                     Compatibility entry point
-  requirements.txt               Web application dependencies
-  requirements-web.txt           Compatibility dependency manifest
+  app.py                         Native desktop entry point (PySide6)
+  web_app.py                     Optional web server entry point
+  requirements.txt               Desktop dependencies
+  requirements-core.txt          Shared data-processing dependencies
+  requirements-web.txt           Optional web dependencies (no Qt)
+  requirements-build.txt         Desktop packaging dependencies
   requirements-test.txt          Tests and icon generation
   core/                          Shared constants and parsing helpers
   models/records.py              Analysis result types
   services/                      Import, OKIR, analysis, Excel, reports, storage
+  ui/                            Qt main window, charts and table model
+  workers/                       Background fetch and desktop operations
+  MEH_Cegprofil.spec              PyInstaller desktop bundle
   web/
     app.py                       Authenticated Flask API
     workspace.py                 Background jobs and active dataset
     templates/                   Hungarian HTML interface
     static/                      Responsive UI and PWA assets
   config/product_groups.json     HAK category mapping
-  tests/                         Service/API and Chromium/WebKit checks
+  tests/                         Desktop, service/API and browser checks
   tools/                         Benchmark and icon generation
   .github/workflows/test.yml      Continuous integration
+  .github/workflows/desktop-build.yml  Manual Windows build
   data/                          Runtime database (not versioned)
   README.md                      Usage and deployment

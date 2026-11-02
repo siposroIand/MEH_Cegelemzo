@@ -372,41 +372,60 @@ def build_ktj_export(df: pd.DataFrame, ktj_service, category_service, load_metad
 # Excel írók
 # ---------------------------------------------------------------------------
 
-def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str = "Összes adat") -> None:
+def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str = "Összes adat",
+                           *, by_year: bool = False) -> None:
     from openpyxl import Workbook
     from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.worksheet import Worksheet
 
     if master.empty:
         raise ValueError("Nincs a szűrésnek megfelelő exportálható adat.")
     base = unique_quantities(master).copy()
     base["HULLADEKKOD"] = base["HULLADEKKOD"].astype(str)
     companies = sorted(base["CEGNEV"].unique())
-    codes = sorted(base["HULLADEKKOD"].unique())
-    if len(codes) + 1 > 16_384 or len(companies) + 2 > 1_048_576:
+    group_columns = ["HULLADEKKOD"]
+    if by_year:
+        years = pd.to_numeric(base["EV"], errors="coerce")
+        if (years.dropna() % 1 != 0).any():
+            raise ValueError("Az év csak egész szám lehet.")
+        base["EV"] = years.map(lambda year: str(int(year)) if pd.notna(year) else "Ismeretlen év")
+        group_columns = ["EV", "HULLADEKKOD"]
+    columns = sorted(set(base[group_columns].itertuples(index=False, name=None)))
+    header_count = 3 if by_year else 2
+    if len(columns) + 1 + int(by_year) > 16_384 or len(companies) + header_count > 1_048_576:
         raise ValueError("A mátrix meghaladja az Excel mérethatárát. Szűkítsd a cégeket vagy a HAK-kódokat.")
 
-    quantities = (base.groupby(["CEGNEV", "HULLADEKKOD"])["OSSZES_MENNYISEG"].sum() / 1000).to_dict()
+    quantities = (base.groupby(["CEGNEV"] + group_columns)["OSSZES_MENNYISEG"].sum() / 1000).to_dict()
+    totals = (base.groupby("CEGNEV")["OSSZES_MENNYISEG"].sum() / 1000).to_dict()
     names = (
-        base.groupby("HULLADEKKOD")["HULLADEK_MEGNEVEZES"]
+        base.groupby(group_columns)["HULLADEK_MEGNEVEZES"]
         .agg(lambda values: "; ".join(sorted({str(value).strip() for value in values.dropna() if str(value).strip()})))
         .to_dict()
     )
     workbook = Workbook(write_only=True)
-    sheet = workbook.create_sheet("Cég–HAK mátrix")
-    sheet.freeze_panes = "B3"
+    sheet = workbook.create_sheet("Cég–Év–HAK mátrix" if by_year else "Cég–HAK mátrix")
+    sheet.freeze_panes = f"B{header_count + 1}"
     sheet.sheet_view.showGridLines = False
-    sheet.print_title_rows = "1:2"
+    sheet.print_title_rows = f"1:{header_count}"
+    sheet.print_title_cols = "A:A"
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.paperSize = Worksheet.PAPERSIZE_A3
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
     sheet.column_dimensions["A"].width = 40
     sheet.row_dimensions[1].height = 25
-    sheet.row_dimensions[2].height = 72
-    for column in range(2, len(codes) + 2):
+    sheet.row_dimensions[header_count].height = 80
+    for column in range(2, len(columns) + 2 + int(by_year)):
         sheet.column_dimensions[get_column_letter(column)].width = 26
 
     header_fill = PatternFill("solid", fgColor="087F74")
     description_fill = PatternFill("solid", fgColor="E4F2EE")
     stripe_fill = PatternFill("solid", fgColor="F3F6F7")
+    value_fill = PatternFill("solid", fgColor="CCF0E7")
+    negative_fill = PatternFill("solid", fgColor="FFE4CC")
     header_font = Font(bold=True, color="FFFFFF")
     bold_font = Font(bold=True)
     wrapped = Alignment(vertical="center", wrap_text=True)
@@ -417,10 +436,18 @@ def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str =
             cell.data_type = "s"
         return cell
 
-    for index, values in enumerate((
-        ["Cég"] + codes,
-        ["Mennyiség (t)"] + [names.get(code) or "Nincs megnevezés" for code in codes],
-    )):
+    descriptions = [names.get(key if by_year else key[0]) or "Nincs megnevezés" for key in columns]
+    headers = (
+        [
+            ["ÉV"] + [int(key[0]) if key[0].isdigit() else key[0] for key in columns] + ["Összes év"],
+            ["HAK"] + [key[1] for key in columns] + ["Összes hulladék"],
+            ["Cég / HAK MEGNEVEZÉS (t)"] + descriptions + ["Összes hulladék (t)"],
+        ] if by_year else [
+            ["Cég"] + [key[0] for key in columns],
+            ["Mennyiség (t)"] + descriptions,
+        ]
+    )
+    for index, values in enumerate(headers):
         cells = []
         for value in values:
             cell = literal_cell(sheet, value)
@@ -435,13 +462,19 @@ def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str =
         cells = [literal_cell(sheet, company)]
         cells[0].font = bold_font
         cells[0].alignment = wrapped
-        for code in codes:
-            cell = WriteOnlyCell(sheet, value=quantities.get((company, code), 0.0))
-            cell.number_format = "#,##0.000"
+        values = [quantities.get((company, *key), 0.0) for key in columns]
+        if by_year:
+            values.append(totals[company])
+        for value in values:
+            cell = WriteOnlyCell(sheet, value=value)
+            cell.number_format = '#,##0.000######;-#,##0.000######;"-"' if by_year else "#,##0.000"
+            if by_year and value != 0:
+                cell.fill = value_fill if value > 0 else negative_fill
             cells.append(cell)
         if index % 2 == 0:
             for cell in cells:
-                cell.fill = stripe_fill
+                if not by_year or cell is cells[0]:
+                    cell.fill = stripe_fill
         sheet.append(cells)
 
     info = workbook.create_sheet("Szűrés")
@@ -451,11 +484,17 @@ def write_hak_matrix_excel(path, master: pd.DataFrame, filter_description: str =
         ("Készült", datetime.now().isoformat(timespec="minutes")),
         ("Aktuális szűrés", filter_description),
         ("Mértékegység", "Tonna (t), 1 t = 1000 kg"),
-        ("Összesítés", "Cégnév és HAK-kód szerint; a kiválasztott évek és adattípusok összege."),
+        ("Összesítés", "Cégnév, év és HAK-kód szerint; a kijelölt adattípusok összege." if by_year else
+         "Cégnév és HAK-kód szerint; a kiválasztott évek és adattípusok összege."),
         ("Kategóriák", "Az átfedő termékcsoportok nem többszörözik a mennyiségeket."),
         ("Megnevezések", "Egy HAK több megnevezése pontosvesszővel elválasztva jelenik meg."),
-        ("Üres kombinációk", "0: nincs mennyiség az adott cég–HAK kombinációra a szűrt adatokban."),
-        ("Pontosság", "A cellák teljes számértéket tárolnak; a megjelenítés három tizedesre kerekített."),
+        ("Üres kombinációk", '"-": nulla vagy hiányzó kombináció; nem bizonyít sikeres OKIR-lekérést.' if by_year else
+         "0: nincs mennyiség az adott cég–HAK kombinációra a szűrt adatokban."),
+        ("Pontosság", "Teljes számérték; legalább 3, legfeljebb 9 megjelenített tizedes." if by_year else
+         "A cellák teljes számértéket tárolnak; a megjelenítés három tizedesre kerekített."),
+        ("Színezés", "Pozitív: zöld; negatív korrekció: narancs; nulla: kitöltés nélkül." if by_year else
+         "Váltakozó sorháttér."),
+        ("Adattípusok", "Több adattípus összege nem nettó anyagmérleg."),
     ):
         cell = literal_cell(info, value)
         cell.alignment = wrapped
