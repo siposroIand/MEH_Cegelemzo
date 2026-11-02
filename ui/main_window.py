@@ -67,7 +67,7 @@ from services.desktop_export_service import atomic_export
 from services.configurable_export_service import available_counties, export_configured_excel
 from services.filter_service import Filters, filter_frame, unique_quantities
 from services.report_service import dataset_bytes, read_dataset, report_html
-from services.package_service import MAX_PACKAGE_BYTES, read_package, write_package
+from services.package_service import read_packages, write_package
 from services.ktj_service import KtjService
 from services.persistence_service import PersistenceService
 from ui.widgets import (
@@ -280,7 +280,7 @@ class MainWindow(QMainWindow):
         import_json_action = QAction("MÉH JSON mentés betöltése", self)
         import_json_action.triggered.connect(self.import_json)
         import_menu.addAction(import_json_action)
-        package_action = QAction("Megosztható PKG betöltése (régi csomag is)", self)
+        package_action = QAction("Megosztható PKG-k betöltése (régi csomag is)", self)
         package_action.triggered.connect(self.import_shared_package)
         import_menu.addAction(package_action)
 
@@ -1806,7 +1806,10 @@ class MainWindow(QMainWindow):
                 state = self.capture_state()
 
                 def writer(path, source, raw, missing):
-                    write_package(path, source, raw, missing, state, self.ktj_service.export_metadata(raw))
+                    write_package(
+                        path, source, raw, missing, state, self.ktj_service.export_metadata(raw),
+                        enforce_limits=False,
+                    )
 
                 self._export_file("meh-megoszthato.okirpkg", "MÉH PKG (*.okirpkg)", writer, *tables)
             elif kind == "json":
@@ -1935,24 +1938,30 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Folyamatban", "Várd meg a folyamatban lévő lekérést.")
             return
         file_filter = "MÉH PKG (*.okirpkg *.pkg *.zip)" if package else "MÉH JSON (*.json)"
-        path, _ = QFileDialog.getOpenFileName(self, "Mentés betöltése", "", file_filter)
-        if not path:
+        if package:
+            paths, _ = QFileDialog.getOpenFileNames(self, "PKG mentések betöltése", "", file_filter)
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, "Mentés betöltése", "", file_filter)
+            paths = [path] if path else []
+        if not paths:
             return
+        path_label = "; ".join(paths)
         allow_legacy = False
         if package:
             try:
-                if Path(path).stat().st_size > MAX_PACKAGE_BYTES:
-                    raise ValueError("A PKG fájl legfeljebb 100 MB lehet.")
-                with zipfile.ZipFile(path) as archive:
-                    legacy = "dataset.json" not in archive.namelist()
+                legacy = False
+                for path in paths:
+                    with zipfile.ZipFile(path) as archive:
+                        legacy |= "dataset.json" not in archive.namelist()
             except (OSError, ValueError, zipfile.BadZipFile) as exc:
-                QMessageBox.critical(self, "PKG betöltési hiba", str(exc))
+                QMessageBox.critical(self, "PKG betöltési hiba", f"{Path(path).name}: {exc}")
                 return
             if legacy:
                 answer = QMessageBox.question(
                     self, "Régi PKG betöltése",
-                    "Ez egy régi, pickle-alapú csomag. Csak saját vagy megbízható forrásból "
-                    "származó fájlt tölts be. A korlátozott olvasó nem támogat minden pandas-típust. "
+                    "A kijelölt fájlok között régi, pickle-alapú csomag is van. "
+                    "Csak saját vagy megbízható forrásból származó fájlokat tölts be. "
+                    "A korlátozott olvasó nem támogat minden pandas-típust. "
                     "Folytatod a betöltést?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
                 )
@@ -1960,19 +1969,22 @@ class MainWindow(QMainWindow):
                     return
                 allow_legacy = True
         def operation():
-            data = Path(path).read_bytes()
             state, metadata = {}, {}
             if package:
-                source, raw, missing, state, metadata = read_package(data, allow_legacy=allow_legacy)
+                source, raw, missing, state, metadata = read_packages(
+                    paths, allow_legacy=allow_legacy, enforce_limits=False,
+                )
             else:
-                source, raw, missing = read_dataset(data)
+                source, raw, missing = read_dataset(Path(paths[0]).read_bytes())
             if source.empty and raw.empty and missing.empty:
                 raise ValueError("A fájl nem tartalmaz feldolgozható adatot.")
             aggregates = aggregate_data(raw, source, self.category_service)
             try:
                 for ktj, payload in metadata.items():
                     self.persistence.save_ktj_meta(ktj, payload)
-                sid = self.persistence.save_snapshot(source, raw, missing, path, "PKG import" if package else "JSON import")
+                sid = self.persistence.save_snapshot(
+                    source, raw, missing, path_label, "PKG import" if package else "JSON import",
+                )
                 self.persistence.set_setting("desktop_active_snapshot", str(sid))
             finally:
                 self.persistence.close()
@@ -1981,12 +1993,14 @@ class MainWindow(QMainWindow):
         def completed(result):
             source, raw, missing, aggregates, state, metadata = result
             self.ktj_service.cache.update(metadata)
-            self.current_file_path = path
-            self.current_file_label.setText(path)
+            self.current_file_path = path_label
+            self.current_file_label.setText(path_label)
             years = raw["EV"].dropna() if not raw.empty else pd.Series(dtype=float)
             self.on_fetch_finished(source, raw, missing, int(years.max()) if not years.empty else None, aggregates)
-            if state:
-                self.restore_state({**state, "current_file_path": path})
+            if len(paths) > 1:
+                self.reset_filters()
+            elif state:
+                self.restore_state({**state, "current_file_path": path_label})
 
         self._run_task("Mentés betöltése...", operation, completed)
 

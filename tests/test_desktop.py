@@ -383,13 +383,13 @@ class DesktopTests(unittest.TestCase):
                 path = Path(self.temp.name) / ("legacy.okirpkg" if legacy else "modern.okirpkg")
                 if legacy:
                     path.write_bytes(legacy_package(tables, state, metadata))
-                    with patch("ui.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
+                    with patch("ui.main_window.QFileDialog.getOpenFileNames", return_value=([str(path)], "")), \
                             patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.No):
                         window.import_shared_package()
                         self.assertIsNone(window._task_worker)
                 else:
                     write_package(path, *tables, state, metadata)
-                with patch("ui.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
+                with patch("ui.main_window.QFileDialog.getOpenFileNames", return_value=([str(path)], "")), \
                         patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.Yes), \
                         patch("ui.main_window.QMessageBox.information"), \
                         patch("ui.main_window.QMessageBox.critical") as failure:
@@ -419,13 +419,109 @@ class DesktopTests(unittest.TestCase):
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("dataset.json", '{"format":"invalid"}')
         try:
-            with patch("ui.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
+            with patch("ui.main_window.QFileDialog.getOpenFileNames", return_value=([str(path)], "")), \
                     patch("ui.main_window.QMessageBox.critical") as failure:
                 window.import_shared_package()
                 self.wait_for(lambda: window._task_worker is None)
                 failure.assert_called_once()
             self.assertIs(window.raw_df, original)
             self.assertEqual(window.persistence.list_snapshots(), [])
+        finally:
+            window.close()
+
+    def test_multiple_packages_merge_without_duplicates_and_reset_filters(self):
+        import pandas as pd
+        from PySide6.QtWidgets import QMessageBox
+        from services.package_service import read_package, write_package
+        from tests.fixtures import dataset
+        from tests.test_portable import legacy_package
+        from ui.main_window import MainWindow
+
+        source, raw, missing = dataset()
+        first = Path(self.temp.name) / "first.okirpkg"
+        second = Path(self.temp.name) / "second.pkg"
+        state = {"selected_years": [2025], "filter_code": "170405"}
+        write_package(first, source.iloc[:1], raw.iloc[:80], missing, state,
+                      {"001": {"MEGNEVEZES": "Első"}, "002": {"MEGNEVEZES": "Régi"}})
+        second.write_bytes(legacy_package(
+            (source, raw.iloc[40:], missing), state,
+            {"002": {"MEGNEVEZES": "Új"}, "003": {"MEGNEVEZES": "Második"}},
+        ))
+        paths = [str(first), str(second)]
+        window = MainWindow()
+        self.app.processEvents()
+        try:
+            window.filter_code.setText("previous-filter")
+            with patch("ui.main_window.QFileDialog.getOpenFileNames", return_value=(paths, "")), \
+                    patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.No):
+                window.import_shared_package()
+                self.assertIsNone(window._task_worker)
+                self.assertEqual(window.persistence.list_snapshots(), [])
+            with patch("ui.main_window.QFileDialog.getOpenFileNames", return_value=(paths, "")), \
+                    patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.Yes), \
+                    patch("ui.main_window.QMessageBox.information"), \
+                    patch("ui.main_window.QMessageBox.critical") as failure, \
+                    patch("services.package_service.MAX_PACKAGE_BYTES", 1), \
+                    patch("services.report_service.MAX_ROWS", 1):
+                window.import_shared_package()
+                self.wait_for(lambda: window._task_worker is None)
+                failure.assert_not_called()
+                for expected, actual in zip((source, raw, missing),
+                                            (window.source_df, window.raw_df, window.missing_df)):
+                    pd.testing.assert_frame_equal(expected.fillna(""), actual.fillna(""), check_dtype=False)
+                self.assertEqual(window.current_filters().years, ())
+                self.assertEqual(window.current_filters().companies, ())
+                self.assertEqual(window.filter_code.text(), "")
+                self.assertEqual(len(window.get_filtered_raw()), len(raw))
+                self.assertEqual(window.current_file_label.text(), "; ".join(paths))
+                self.assertEqual(set(window.ktj_service.cache), {"001", "002", "003"})
+                self.assertEqual(window.ktj_service.cache["002"]["MEGNEVEZES"], "Új")
+                sid = int(window.persistence.get_setting("desktop_active_snapshot"))
+                for expected, actual in zip((source, raw, missing), window.persistence.load_snapshot(sid)):
+                    pd.testing.assert_frame_equal(expected.fillna(""), actual.fillna(""), check_dtype=False)
+                self.assertEqual(window.persistence.load_ktj_meta("003"), {"MEGNEVEZES": "Második"})
+                exported = Path(self.temp.name) / "merged.okirpkg"
+                with patch("ui.main_window.QFileDialog.getSaveFileName", return_value=(str(exported), "")):
+                    window.export_portable("pkg")
+                    self.wait_for(lambda: window._task_worker is None)
+                failure.assert_not_called()
+                self.assertEqual(len(read_package(exported, enforce_limits=False)[1]), len(raw))
+        finally:
+            window.close()
+
+    def test_failed_batch_and_cancel_preserve_active_snapshot(self):
+        from services.package_service import write_package
+        from tests.fixtures import dataset
+        from ui.main_window import MainWindow
+        import zipfile
+
+        valid = Path(self.temp.name) / "valid.okirpkg"
+        invalid = Path(self.temp.name) / "invalid.okirpkg"
+        write_package(valid, *dataset(), metadata={"001": {"MEGNEVEZES": "Nem menthető"}})
+        with zipfile.ZipFile(invalid, "w") as archive:
+            archive.writestr("dataset.json", '{"format":"invalid"}')
+        window = MainWindow()
+        self.app.processEvents()
+        try:
+            window.source_df, window.raw_df, window.missing_df = dataset(5)
+            original = window.raw_df
+            sid = window.persistence.save_snapshot(window.source_df, original, window.missing_df)
+            window.persistence.set_setting("desktop_active_snapshot", str(sid))
+            for paths in ([], [str(valid), str(invalid)]):
+                with patch("ui.main_window.QFileDialog.getOpenFileNames", return_value=(paths, "")), \
+                        patch("ui.main_window.QMessageBox.critical") as failure:
+                    window.import_shared_package()
+                    self.wait_for(lambda: window._task_worker is None)
+                    if paths:
+                        failure.assert_called_once()
+                        self.assertIn("invalid.okirpkg", failure.call_args.args[-1])
+                    else:
+                        failure.assert_not_called()
+                self.assertIs(window.raw_df, original)
+                self.assertEqual(window.persistence.get_setting("desktop_active_snapshot"), str(sid))
+                self.assertEqual(len(window.persistence.list_snapshots()), 1)
+                self.assertIsNone(window.persistence.load_ktj_meta("001"))
+                self.assertEqual(window.ktj_service.cache, {})
         finally:
             window.close()
 
